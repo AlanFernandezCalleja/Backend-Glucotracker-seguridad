@@ -6,15 +6,15 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const crypto = require('crypto');
-const  multer =require('multer');
+const multer = require('multer');
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 app.use(express.json());
 const { sendEmail } = require('./src/email/sendEmail');
 const { getOtpTemplate } = require('./src/email/templates');
-const {setOTP}=require("./otpCache")
+const { setOTP } = require("./otpCache")
 app.use(cors({
-  origin: ['http://localhost:4200','*'],
+  origin: ['http://localhost:4200', '*'],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -87,7 +87,8 @@ app.use(cors({
 //     });
 // });
 const auditoriaEndpoint = require('./src/middlewares/auditoria.login');
-app.post('/api/login',  auditoriaEndpoint(),async (req, res) => {
+
+app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
   const { correo, contrasena } = req.body;
 
   // Buscar usuario
@@ -100,80 +101,81 @@ app.post('/api/login',  auditoriaEndpoint(),async (req, res) => {
 
   if (usuarioError || !usuarioData) {
     console.log({
-        fecha:new Date().toISOString(),
-        endpoint: '/api/login',
-        metodo: 'POST',
-        correo,
-        ip:req.ip,
-        resultado: 'FALLIDO',
-        motivo: 'Correo no encontrado'
-      });
+      fecha: new Date().toISOString(),
+      endpoint: '/api/login',
+      metodo: 'POST',
+      correo,
+      ip: req.ip,
+      resultado: 'FALLIDO',
+      motivo: 'Correo no encontrado'
+    });
     return res.status(401).json({ error: 'Correo no encontrado' });
   }
 
   const usuario = usuarioData;
   const rolMap = { administrador: 'id_admin', paciente: 'id_paciente', medico: 'id_medico' };
-const rolB = rolMap[usuario.rol];
-const { data: rolData, error: rolError } = await supabase
-  .from(usuario.rol)
-  .select(rolB)
-  .eq("id_usuario", usuario.id_usuario)
-  .single();
+  const rolB = rolMap[usuario.rol];
+  const { data: rolData, error: rolError } = await supabase
+    .from(usuario.rol)
+    .select(rolB)
+    .eq("id_usuario", usuario.id_usuario)
+    .single();
 
-if (rolError || !rolData) {
-  console.log({
-        fecha:new Date().toISOString(),
-        endpoint: '/api/login',
-        metodo: 'POST',
-        correo,
-        ip:req.ip,
-        resultado: 'FALLIDO',
-        motivo: 'Rol cuenta'
-      });
-  return res.status(401).json({ error: 'Rol cuenta' })
-};
+  if (rolError || !rolData) {
+    console.log({
+      fecha: new Date().toISOString(),
+      endpoint: '/api/login',
+      metodo: 'POST',
+      correo,
+      ip: req.ip,
+      resultado: 'FALLIDO',
+      motivo: 'Rol cuenta'
+    });
+    return res.status(401).json({ error: 'Rol cuenta' })
+  };
 
-const id_rol = rolData[rolB];
+  const id_rol = rolData[rolB];
 
-try{
-  // Verificar contraseña
-  const isMatch = await bcrypt.compare(String(contrasena), usuario.contrasena);
-  if (!isMatch) return res.status(401).json({ error: 'Contraseña incorrecta' });
+  try {
+    // Verificar contraseña
+    const isMatch = await bcrypt.compare(String(contrasena), usuario.contrasena);
+    if (!isMatch) return res.status(401).json({ error: 'Contraseña incorrecta' });
 
-  // Generar OTPF
-  const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
-  setOTP(usuario.id_usuario, otp, 5 * 60 * 1000); // 5 minutos
+    // Generar OTPF
+    const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
+    setOTP(usuario.id_usuario, otp, 5 * 60 * 1000); // 5 minutos
 
-  // Enviar OTP por correo
-  const { subject, html } = getOtpTemplate({
-  nombreUsuario: usuario.correo, // o nombre si lo tienes
-  codigo: otp
-});
+    // Enviar OTP por correo
+    const { subject, html } = getOtpTemplate({
+      nombreUsuario: usuario.correo, // o nombre si lo tienes
+      codigo: otp
+    });
 
-await sendEmail(
-  usuario.correo,
-  subject,
-  html
-);
-  console.log({
-      fecha:new Date().toISOString(),
+    await sendEmail(
+      usuario.correo,
+      subject,
+      html
+    );
+    console.log({
+      fecha: new Date().toISOString(),
       endpoint: '/api/login',
       metodo: 'POST',
       correo,
       id_usuario: usuario.id_usuario,
       id_rol,
-      ip:req.ip,
+      ip: req.ip,
       resultado: 'EXITOSO',
       mensaje: 'OTP enviado al correo'
     });
-  res.status(200).json({ id_usuario: usuario.id_usuario,id_rol:id_rol, message: 'OTP enviado al correo' });
-}catch (error) {
+    
+    res.status(200).json({ id_usuario: usuario.id_usuario, id_rol: id_rol, message: 'OTP enviado al correo' });
+  } catch (error) {
     console.log({
-      fecha:new Date().toISOString(),
+      fecha: new Date().toISOString(),
       endpoint: '/api/login',
       metodo: 'POST',
       correo,
-      ip:req.ip,
+      ip: req.ip,
       resultado: 'FALLIDO',
       motivo: error.message
     });
@@ -184,7 +186,7 @@ await sendEmail(
 
 const { getOTP, deleteOTP } = require('./otpCache');
 
-app.post('/api/verify-otp',  auditoriaEndpoint(),async (req, res) => {
+app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
   const { id_usuario, codigo } = req.body;
   try {
     // Verificar OTP en cache
@@ -192,14 +194,14 @@ app.post('/api/verify-otp',  auditoriaEndpoint(),async (req, res) => {
 
     if (!cachedOTP || cachedOTP !== codigo) {
       console.log({
-          fecha:new Date().toISOString(),
-          endpoint: '/api/verify-otp',
-          metodo: 'POST',
-          id_usuario,
-          ip:req.ip,
-          resultado: 'FALLIDO',
-          motivo: 'Código incorrecto o expirado'
-        });
+        fecha: new Date().toISOString(),
+        endpoint: '/api/verify-otp',
+        metodo: 'POST',
+        id_usuario,
+        ip: req.ip,
+        resultado: 'FALLIDO',
+        motivo: 'Código incorrecto o expirado'
+      });
       return res.status(401).json({ error: 'Código incorrecto o expirado' });
     }
 
@@ -215,14 +217,14 @@ app.post('/api/verify-otp',  auditoriaEndpoint(),async (req, res) => {
 
     if (usuarioError || !usuarioData) {
       console.log({
-          fecha:new Date().toISOString(),
-          endpoint: '/api/verify-otp',
-          metodo: 'POST',
-          id_usuario,
-          ip:req.ip,
-          resultado: 'FALLIDO',
-          motivo: 'Usuario no encontrado'
-        });
+        fecha: new Date().toISOString(),
+        endpoint: '/api/verify-otp',
+        metodo: 'POST',
+        id_usuario,
+        ip: req.ip,
+        resultado: 'FALLIDO',
+        motivo: 'Usuario no encontrado'
+      });
       return res.status(401).json({ error: 'Usuario no encontrado' });
     }
 
@@ -252,29 +254,29 @@ app.post('/api/verify-otp',  auditoriaEndpoint(),async (req, res) => {
       id_rol = pacienteData.id_paciente;
     }
     console.log({
-        fecha:new Date().toISOString(),
-        endpoint: '/api/verify-otp',
-        metodo: 'POST',
-        id_usuario,
-        rol,
-        id_rol,
-        ip:req.ip,
-        resultado: 'EXITOSO',
-        mensaje: 'Login exitoso'
-      });
+      fecha: new Date().toISOString(),
+      endpoint: '/api/verify-otp',
+      metodo: 'POST',
+      id_usuario,
+      rol,
+      id_rol,
+      ip: req.ip,
+      resultado: 'EXITOSO',
+      mensaje: 'Login exitoso'
+    });
     res.status(200).json({
       id_usuario,
       rol,
       id_rol,
       message: 'Login exitoso'
     });
-  }catch (error) {
+  } catch (error) {
     console.log({
-      fecha:new Date().toISOString(),
+      fecha: new Date().toISOString(),
       endpoint: '/api/verify-otp',
       metodo: 'POST',
       id_usuario,
-      ip:req.ip,
+      ip: req.ip,
       resultado: 'FALLIDO',
       motivo: error.message
     });
@@ -323,22 +325,22 @@ app.put('/usuario/:id_usuario/password', async (req, res) => {
 const medicoRoutes = require('./src/routes/medico.routes');
 app.use('/api/medicos', medicoRoutes);
 
-const pacienteRoutes=require('./src/routes/pacientes.routes');
-app.use('/api/pacientes',pacienteRoutes);
+const pacienteRoutes = require('./src/routes/pacientes.routes');
+app.use('/api/pacientes', pacienteRoutes);
 
-const adminRoutes=require('./src/routes/admin.routes');
-app.use('/api/administradores',adminRoutes);
+const adminRoutes = require('./src/routes/admin.routes');
+app.use('/api/administradores', adminRoutes);
 
-const registroRoutes=require('./src/routes/registro.routes');
+const registroRoutes = require('./src/routes/registro.routes');
 app.use('/api/registro', registroRoutes);
 
-const generalRoutes=require('./src/routes/general.routes');
-app.use('/api/general',generalRoutes);
+const generalRoutes = require('./src/routes/general.routes');
+app.use('/api/general', generalRoutes);
 
-const pdfRoute=require('./src/routes/patientPDF.routes')
+const pdfRoute = require('./src/routes/patientPDF.routes')
 app.use("/api", pdfRoute);
 
 
 app.listen(PORT, () => {
-    console.log(`Servidor corriendo en http://localhost:${PORT}`);
+  console.log(`Servidor corriendo en http://localhost:${PORT}`);
 });
