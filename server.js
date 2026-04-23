@@ -1,3 +1,4 @@
+
 const express = require('express');
 const supabase = require('./database');
 const bcrypt = require('bcrypt');
@@ -13,11 +14,15 @@ app.use(express.json());
 const { sendEmail } = require('./src/email/sendEmail');
 const { getOtpTemplate } = require('./src/email/templates');
 const { setOTP } = require("./otpCache")
+const loginPrueba = require('./src/controllers/auth.controller')
 app.use(cors({
   origin: ['http://localhost:4200', '*'],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
 }));
+
+
 
 // // Endpoint POST para login
 // app.post('/api/login', async (req, res) => {
@@ -88,6 +93,12 @@ app.use(cors({
 // });
 const auditoriaEndpoint = require('./src/middlewares/auditoria.login');
 
+const cookieParser = require('cookie-parser');
+app.use(cookieParser());
+
+
+app.post('/api/prueba/login', loginPrueba)
+
 app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
   const { correo, contrasena } = req.body;
 
@@ -113,7 +124,11 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
   }
 
   const usuario = usuarioData;
-  const rolMap = { administrador: 'id_admin', paciente: 'id_paciente', medico: 'id_medico' };
+  const rolMap = { 
+    administrador: 'id_admin', 
+    paciente: 'id_paciente', 
+    medico: 'id_medico' 
+  };
   const rolB = rolMap[usuario.rol];
   const { data: rolData, error: rolError } = await supabase
     .from(usuario.rol)
@@ -167,7 +182,7 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
       resultado: 'EXITOSO',
       mensaje: 'OTP enviado al correo'
     });
-    
+
     res.status(200).json({ id_usuario: usuario.id_usuario, id_rol: id_rol, message: 'OTP enviado al correo' });
   } catch (error) {
     console.log({
@@ -337,7 +352,8 @@ app.use('/api/registro', registroRoutes);
 const generalRoutes = require('./src/routes/general.routes');
 app.use('/api/general', generalRoutes);
 
-const pdfRoute = require('./src/routes/patientPDF.routes')
+const pdfRoute = require('./src/routes/patientPDF.routes');
+const { loginAuth } = require('./src/controllers/auth.controller');
 app.use("/api", pdfRoute);
 
 
