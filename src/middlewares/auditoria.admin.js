@@ -1,18 +1,25 @@
 const supabase = require('../../database');
+const verificarToken = require('../utils/verificarToken')
+
 
 const auditoriaAdministrador = async (req, res, next) => {
   let called = false; // ✅ para que la auditoría se registre solo una vez
 
   const originalSend = res.send.bind(res);
 
+  
+
   const registrarAuditoria = async () => {
     if (called) return; // ya registrado
     called = true;
 
+    
+
     try {
       let id_usuario = req.params?.id_usuario || req.body?.id_usuario || req.query?.id_usuario ||req.params?.idUsuario|| null;
       let id_admin = req.params?.idAdmin || req.body?.idAdmin || req.query?.idAdmin || req.body?.administrador_id_admin||null;
-        
+      
+
       // Resolver id_usuario si solo tenemos id_medico
       if (!id_usuario && id_admin) {
         const { data } = await supabase
