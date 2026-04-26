@@ -13,8 +13,7 @@ const generateToken = (usuario) => {
   const payload = {
     id_usuario: usuario.id_usuario,
     correo: usuario.correo,
-    rol: usuario.rol // ej: 'admin', 'user'
-    
+    rol: usuario.rol // 
   };
 
   // Firmamos el token con una expiración (ej. 2 horas)
