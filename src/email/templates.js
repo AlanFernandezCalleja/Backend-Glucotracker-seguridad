@@ -1,3 +1,4 @@
+// Template correo Alerta: Hipoglucemia para el paciente
 const getHipoTemplate = ({ nombrePaciente, valor, fecha, hora ,nombreMedico,observaciones}) => ({
   subject: `Alerta de Hipoglucemia - ${nombrePaciente}`,
   html: `
@@ -16,7 +17,7 @@ const getHipoTemplate = ({ nombrePaciente, valor, fecha, hora ,nombreMedico,obse
     <p>Atentamente,<br>GlucoTracker</p>
   `
 });
-
+//  Template correo Alerta: Hiperglucemia para el paciente
 const getHiperTemplate = ({ nombrePaciente, valor, fecha, hora,observaciones }) => ({
   subject: `Alerta de Hiperglucemia - ${nombrePaciente}`,
   html: `
@@ -37,7 +38,7 @@ const getHiperTemplate = ({ nombrePaciente, valor, fecha, hora,observaciones }) 
   `
 });
 
-
+// Template correo Codigo: Codigo de Verificación 2 pasos 
 const getOtpTemplate = ({ nombreUsuario, codigo }) => ({
   subject: `Código de verificación para GlucoTracker`,
   html: `
