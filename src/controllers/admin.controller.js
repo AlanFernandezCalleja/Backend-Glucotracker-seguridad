@@ -249,33 +249,154 @@ const agregarAdmin=async(req,res)=>{
 }
 
 
-const obtenerAdmins=async(req,res)=>{
-  try{
-  const id_admin=parseInt(req.params.idAdmin);
-  const { data, error } = await supabase.rpc('obtener_admins_visible', {
-      id_admin_input: id_admin
-    });
+const obtenerAdmins = async (req, res) => {
+  try {
+    // 1. Recibimos el código público desde la URL
+    const { idAdmin } = req.params;
+
+    if (!idAdmin) {
+      return res.status(400).json({ error: "El código de usuario es requerido" });
+    }
+
+    // 2. Ejecutamos 1 sola consulta emulando los JOINs
+    const { data, error } = await supabase
+  .from('administrador')
+  .select(`
+    id_admin,
+    cargo,
+    fecha_ingreso,
+    usuario!inner (
+      nombre_completo,
+      correo,
+      fecha_nac,
+      teléfono
+    ),
+    administrador (
+      usuario (
+        nombre_completo
+      )
+    ),
+    admin_permiso (
+      permiso (
+        nombre
+      )
+    )
+  `)
+  .neq('id_admin', 1)
+  .neq('usuario.id_usuario', idAdmin); // 👈 ¡LA MEJORA! Excluye al solicitante directamente usando el código de la tabla usuario
 
     if (error) {
-      console.error('Error ejecutando función:', error);
+      console.error('Error obteniendo admins visibles:', error);
       return res.status(500).json({ error: error.message });
     }
 
-    if (!data || data.length === 0) {
-      return res.status(404).json({ message: 'No se encontraron administradores' });
+    // 3. Mapeamos (aplanamos) los resultados para Angular
+   const adminsFormateados = data.map((a) => {
+
+  let nombreAdmin = null;
+  if (a.administrador && a.administrador.usuario) {
+    nombreAdmin = a.administrador.usuario.nombre_completo;
+  }
+
+  // 🧠 convertir lista de permisos a objeto booleano
+  const permisos = {
+    editar: false,
+    eliminar: false,
+    ver: false,
+    agregar: false
+  };
+
+  if (a.admin_permiso) {
+    a.admin_permiso.forEach(p => {
+      const nombre = p.permiso.nombre;
+
+      if (nombre === 'EDITAR_ADMIN') permisos.editar = true;
+      if (nombre === 'ELIMINAR_ADMIN') permisos.eliminar = true;
+      if (nombre === 'VER_ADMIN') permisos.ver = true;
+      if (nombre === 'AGREGAR_ADMIN') permisos.agregar = true;
+    });
+  }
+
+  return {
+    id: a.id_admin,
+    nombre: a.usuario.nombre_completo,
+    correo: a.usuario.correo,
+    fechaNac: a.usuario.fecha_nac,
+    telefono: a.usuario.teléfono,
+    cargo: a.cargo,
+    fechaIn: a.fecha_ingreso,
+    admitidoPor: nombreAdmin,
+    permisos // 👈 🔥 AHORA VIENE DESDE BD
+  };
+});
+
+    // 4. Devolvemos el JSON limpio
+    return res.status(200).json(adminsFormateados);
+
+  } catch (err) {
+    console.error('Error interno en obtenerAdminsVisibles:', err);
+    return res.status(500).json({ error: 'Error del servidor' });
+  }
+};
+
+const actualizarPermisosAdmins = async (req, res) => {
+  try {
+    const admins = req.body;
+
+    for (const admin of admins) {
+      const id_admin = admin.id;
+
+      // 1. Obtener permisos actuales
+      const { data: actuales, error } = await supabase
+        .from('admin_permiso')
+        .select('id_permiso')
+        .eq('id_admin', id_admin);
+
+      if (error) throw error;
+
+      const actualesIds = actuales.map(p => p.id_permiso);
+
+      // 2. Convertir permisos nuevos a IDs
+      const nuevosIds = [];
+
+      if (admin.permisos.editar) nuevosIds.push(1);
+      if (admin.permisos.eliminar) nuevosIds.push(2);
+      if (admin.permisos.ver) nuevosIds.push(3);
+      if (admin.permisos.agregar) nuevosIds.push(4);
+
+      // 3. Calcular diferencias
+      const aInsertar = nuevosIds.filter(id => !actualesIds.includes(id));
+      const aEliminar = actualesIds.filter(id => !nuevosIds.includes(id));
+
+      // 4. Insertar nuevos
+      if (aInsertar.length > 0) {
+        const nuevosPermisos = aInsertar.map(id_permiso => ({
+          id_admin,
+          id_permiso
+        }));
+
+        await supabase
+          .from('admin_permiso')
+          .insert(nuevosPermisos);
+      }
+
+      // 5. Eliminar los que ya no están
+      if (aEliminar.length > 0) {
+        await supabase
+          .from('admin_permiso')
+          .delete()
+          .eq('id_admin', id_admin)
+          .in('id_permiso', aEliminar);
+      }
     }
 
-    return res.status(200).json(data); // devuelve el objeto directamente
-  } catch (err) {
-    console.error('Error interno:', err);
-    return res.status(500).json({ error: 'Error del servidor' });
-  
+    res.json({ mensaje: 'Permisos actualizados inteligentemente ' });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error actualizando permisos' });
   }
-}
+};
 
 
-
-
-
-
-module.exports={medicosActivos,medicosSolicitantes,activarMedico,pacientesActivos,pacientesSolicitantes,activarPaciente,perfilAdmin,agregarAdmin,obtenerAdmins};
+module.exports={medicosActivos,medicosSolicitantes,activarMedico,pacientesActivos,pacientesSolicitantes,activarPaciente,perfilAdmin,agregarAdmin,obtenerAdmins, actualizarPermisosAdmins};

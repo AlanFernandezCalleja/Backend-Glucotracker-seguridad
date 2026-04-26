@@ -200,106 +200,87 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
 
 
 const { getOTP, deleteOTP } = require('./otpCache');
+const  {generateToken}  = require('./src/utils/auth');
 
 app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
   const { id_usuario, codigo } = req.body;
+
   try {
-    // Verificar OTP en cache
     const cachedOTP = getOTP(id_usuario);
 
     if (!cachedOTP || cachedOTP !== codigo) {
-      console.log({
-        fecha: new Date().toISOString(),
-        endpoint: '/api/verify-otp',
-        metodo: 'POST',
-        id_usuario,
-        ip: req.ip,
-        resultado: 'FALLIDO',
-        motivo: 'Código incorrecto o expirado'
-      });
       return res.status(401).json({ error: 'Código incorrecto o expirado' });
     }
 
-    // OTP correcto: eliminar de cache
     deleteOTP(id_usuario);
 
-    // Obtener datos completos de usuario y rol
-    const { data: usuarioData, error: usuarioError } = await supabase
+    // 🔹 usuario
+    const { data: usuario } = await supabase
       .from("usuario")
-      .select("id_usuario, rol")
+      .select("id_usuario, correo, rol")
       .eq("id_usuario", id_usuario)
       .single();
 
-    if (usuarioError || !usuarioData) {
-      console.log({
-        fecha: new Date().toISOString(),
-        endpoint: '/api/verify-otp',
-        metodo: 'POST',
-        id_usuario,
-        ip: req.ip,
-        resultado: 'FALLIDO',
-        motivo: 'Usuario no encontrado'
-      });
-      return res.status(401).json({ error: 'Usuario no encontrado' });
+    // 🔹 config roles
+    const rolMap = {
+      administrador: { tabla: "administrador", campo: "id_admin" },
+      medico: { tabla: "medico", campo: "id_medico" },
+      paciente: { tabla: "paciente", campo: "id_paciente" }
+    };
+
+    const config = rolMap[usuario.rol];
+
+    const { data: rolData } = await supabase
+      .from(config.tabla)
+      .select(config.campo)
+      .eq("id_usuario", id_usuario)
+      .single();
+
+    const id_rol = rolData[config.campo];
+
+    // 🔥 permisos (solo admins por ahora)
+    let permisos = [];
+
+    if (usuario.rol === "administrador") {
+      const { data: permisosData } = await supabase
+        .from("admin_permiso")
+        .select("permiso(nombre)")
+        .eq("id_admin", id_rol);
+
+      permisos = permisosData.map(p => p.permiso.nombre);
     }
 
-    let id_rol = 0;
-    const rol = usuarioData.rol;
+    // 🔐 usar TU generateToken
+    const token = generateToken({
+      id_usuario: usuario.id_usuario,
+      correo: usuario.correo,
+      rol: usuario.rol,
+      id_rol,
+      permisos
+    });
 
-    if (rol === "administrador") {
-      const { data: adminData } = await supabase
-        .from("administrador")
-        .select("id_admin")
-        .eq("id_usuario", id_usuario)
-        .single();
-      id_rol = adminData.id_admin;
-    } else if (rol === "medico") {
-      const { data: medicoData } = await supabase
-        .from("medico")
-        .select("id_medico")
-        .eq("id_usuario", id_usuario)
-        .single();
-      id_rol = medicoData.id_medico;
-    } else {
-      const { data: pacienteData } = await supabase
-        .from("paciente")
-        .select("id_paciente")
-        .eq("id_usuario", id_usuario)
-        .single();
-      id_rol = pacienteData.id_paciente;
-    }
-    console.log({
-      fecha: new Date().toISOString(),
-      endpoint: '/api/verify-otp',
-      metodo: 'POST',
-      id_usuario,
-      rol,
-      id_rol,
-      ip: req.ip,
-      resultado: 'EXITOSO',
-      mensaje: 'Login exitoso'
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 5 * 60 * 60 * 1000
     });
-    res.status(200).json({
-      id_usuario,
-      rol,
-      id_rol,
-      message: 'Login exitoso'
+
+    res.json({
+      message: 'Login exitoso',
+      usuario: {
+        id_usuario: usuario.id_usuario,
+        rol: usuario.rol,
+        id_rol,
+        permisos
+      }
     });
+
   } catch (error) {
-    console.log({
-      fecha: new Date().toISOString(),
-      endpoint: '/api/verify-otp',
-      metodo: 'POST',
-      id_usuario,
-      ip: req.ip,
-      resultado: 'FALLIDO',
-      motivo: error.message
-    });
+    console.error(error);
     res.status(500).json({ error: 'Error interno' });
   }
 });
-
-
 app.put('/usuario/:id_usuario/password', async (req, res) => {
   const { id_usuario } = req.params;
   const { contrasena } = req.body;
