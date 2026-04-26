@@ -13,11 +13,14 @@ const generateToken = (usuario) => {
   const payload = {
     id_usuario: usuario.id_usuario,
     correo: usuario.correo,
-    rol: usuario.rol // 
+    rol: usuario.rol, // 
+    id_rol: usuario.id_rol
   };
 
   // Firmamos el token con una expiración (ej. 2 horas)
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '5h' });
 };
+
+
 
 module.exports = { verifyPassword, generateToken };

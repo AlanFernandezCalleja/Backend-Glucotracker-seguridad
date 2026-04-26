@@ -97,9 +97,11 @@ const cookieParser = require('cookie-parser');
 app.use(cookieParser());
 
 
-app.post('/api/prueba/login', loginPrueba)
+app.post('/api/login', loginPrueba)
 
-app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
+
+
+app.post('/api/poto/login', auditoriaEndpoint(), async (req, res) => {
   const { correo, contrasena } = req.body;
 
   // Buscar usuario
@@ -146,7 +148,7 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
       resultado: 'FALLIDO',
       motivo: 'Rol cuenta'
     });
-    return res.status(401).json({ error: 'Rol cuenta' })
+    return res.status(401).json({ error: 'El rol de la cuenta no pertenece' })
   };
 
   const id_rol = rolData[rolB];
