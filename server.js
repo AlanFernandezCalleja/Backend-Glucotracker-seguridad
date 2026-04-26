@@ -133,8 +133,7 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
   const { data: rolData, error: rolError } = await supabase
     .from(usuario.rol)
     .select(rolB)
-    .eq("id_usuario", usuario.id_usuario)
-    .single();
+    .eq("id_usuario", usuario.id_usuario);
 
   if (rolError || !rolData) {
     console.log({
@@ -201,11 +200,11 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
 
 const { getOTP, deleteOTP } = require('./otpCache');
 const  {generateToken}  = require('./src/utils/auth');
-
 app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
   const { id_usuario, codigo } = req.body;
 
   try {
+    // 🔐 validar OTP
     const cachedOTP = getOTP(id_usuario);
 
     if (!cachedOTP || cachedOTP !== codigo) {
@@ -214,31 +213,55 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
 
     deleteOTP(id_usuario);
 
-    // 🔹 usuario
-    const { data: usuario } = await supabase
+    // 👤 obtener usuario
+    const { data: usuario, error: usuarioError } = await supabase
       .from("usuario")
       .select("id_usuario, correo, rol")
       .eq("id_usuario", id_usuario)
       .single();
 
-    // 🔹 config roles
+    if (usuarioError || !usuario) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+
+    // 🔧 configuración por rol
     const rolMap = {
-      administrador: { tabla: "administrador", campo: "id_admin" },
-      medico: { tabla: "medico", campo: "id_medico" },
-      paciente: { tabla: "paciente", campo: "id_paciente" }
+      administrador: { tabla: "administrador", campos: ["id_admin", "cargo"] },
+      medico: { tabla: "medico", campos: ["id_medico"] },
+      paciente: { tabla: "paciente", campos: ["id_paciente"] }
     };
 
     const config = rolMap[usuario.rol];
 
-    const { data: rolData } = await supabase
+    if (!config) {
+      return res.status(400).json({ error: "Rol inválido" });
+    }
+
+    // 🧩 obtener datos del rol
+    const { data: rolData, error: rolError } = await supabase
       .from(config.tabla)
-      .select(config.campo)
+      .select(config.campos.join(", "))
       .eq("id_usuario", id_usuario)
       .single();
 
-    const id_rol = rolData[config.campo];
+    if (rolError || !rolData) {
+      return res.status(404).json({ error: "Rol no encontrado" });
+    }
 
-    // 🔥 permisos (solo admins por ahora)
+    // 🎯 normalizar id_rol y cargo
+    let id_rol;
+    let cargo = null;
+
+    if (usuario.rol === "administrador") {
+      id_rol = rolData.id_admin;
+      cargo = rolData.cargo;
+    } else if (usuario.rol === "medico") {
+      id_rol = rolData.id_medico;
+    } else {
+      id_rol = rolData.id_paciente;
+    }
+
+    // 🔐 permisos (solo admin por ahora)
     let permisos = [];
 
     if (usuario.rol === "administrador") {
@@ -247,10 +270,10 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
         .select("permiso(nombre)")
         .eq("id_admin", id_rol);
 
-      permisos = permisosData.map(p => p.permiso.nombre);
+      permisos = permisosData?.map(p => p.permiso.nombre) || [];
     }
 
-    // 🔐 usar TU generateToken
+    // 🎟️ token
     const token = generateToken({
       id_usuario: usuario.id_usuario,
       correo: usuario.correo,
@@ -259,6 +282,7 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
       permisos
     });
 
+    // 🍪 cookie
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -266,12 +290,14 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
       maxAge: 5 * 60 * 60 * 1000
     });
 
+    // 📤 respuesta final
     res.json({
       message: 'Login exitoso',
       usuario: {
         id_usuario: usuario.id_usuario,
         rol: usuario.rol,
         id_rol,
+        ...(cargo ? { cargo } : {}), // 👈 SOLO ADMIN
         permisos
       }
     });
