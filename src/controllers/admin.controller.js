@@ -104,7 +104,7 @@ const pacientesSolicitantes=async (req, res) => {
       return res.status(500).json({ error: error.message })
     }
 
-    return res.status(200).json(data) // ✅ devuelve arreglo JSON
+    return res.status(200).json(data) // JSon 
   } catch (err) {
     console.error('Error interno:', err)
     return res.status(500).json({ error: 'Error del servidor' })
