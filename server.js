@@ -105,7 +105,7 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
   // Buscar usuario
   const { data: usuarioData, error: usuarioError } = await supabase
     .from("usuario")
-    .select("id_usuario, correo, contrasena, rol")
+    .select("id_usuario, correo, contrasena, rol, intentos_fallidos, bloqueado_hasta, fecha_cambio_contrasena")
     .eq("correo", correo)
     .eq("estado", true)
     .single();
@@ -124,6 +124,20 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
   }
 
   const usuario = usuarioData;
+
+  // Verificar si la cuenta está bloqueada
+  if (usuario.bloqueado_hasta && new Date(usuario.bloqueado_hasta) > new Date()) {
+    console.log({
+      fecha: new Date().toISOString(),
+      endpoint: '/api/login',
+      metodo: 'POST',
+      correo,
+      ip: req.ip,
+      resultado: 'FALLIDO',
+      motivo: 'Cuenta bloqueada'
+    });
+    return res.status(403).json({ error: 'Cuenta bloqueada por múltiples intentos fallidos. Solicita el desbloqueo por correo.' });
+  }
   const rolMap = { 
     administrador: 'id_admin', 
     paciente: 'id_paciente', 
@@ -154,7 +168,38 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
   try {
     // Verificar contraseña
     const isMatch = await bcrypt.compare(String(contrasena), usuario.contrasena);
-    if (!isMatch) return res.status(401).json({ error: 'Contraseña incorrecta' });
+    if (!isMatch) {
+      // Incrementar intentos fallidos
+      const nuevosIntentos = (usuario.intentos_fallidos || 0) + 1;
+      let updateData = { intentos_fallidos: nuevosIntentos };
+      if (nuevosIntentos >= 3) {
+          // Bloquear cuenta (por 100 años para forzar desbloqueo por correo)
+          const fechaDesbloqueo = new Date();
+          fechaDesbloqueo.setFullYear(fechaDesbloqueo.getFullYear() + 100);
+          updateData.bloqueado_hasta = fechaDesbloqueo.toISOString();
+      }
+      await supabase.from("usuario").update(updateData).eq("id_usuario", usuario.id_usuario);
+
+      return res.status(401).json({ error: nuevosIntentos >= 3 ? 'Cuenta bloqueada por múltiples intentos fallidos.' : 'Contraseña incorrecta' });
+    }
+
+    // Reiniciar intentos fallidos si es exitoso
+    if (usuario.intentos_fallidos > 0) {
+      await supabase.from("usuario").update({ intentos_fallidos: 0, bloqueado_hasta: null }).eq("id_usuario", usuario.id_usuario);
+    }
+
+    // Verificar vigencia (6 meses)
+    if (usuario.fecha_cambio_contrasena) {
+      const seisMesesAtras = new Date();
+      seisMesesAtras.setMonth(seisMesesAtras.getMonth() - 6);
+      if (new Date(usuario.fecha_cambio_contrasena) < seisMesesAtras) {
+        return res.status(403).json({ 
+          error: 'Tu contraseña ha caducado (más de 6 meses). Por favor, actualízala.', 
+          code: 'PASSWORD_EXPIRED', 
+          id_usuario: usuario.id_usuario 
+        });
+      }
+    }
 
     // Generar OTPF
     const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
@@ -300,32 +345,71 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
 });
 
 
+const { esContrasenaRobusta } = require('./src/utils/security');
 app.put('/usuario/:id_usuario/password', async (req, res) => {
   const { id_usuario } = req.params;
   const { contrasena } = req.body;
 
-  if (!contrasena || contrasena.length < 6) {
-    return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres.' });
+  const validacion = esContrasenaRobusta(contrasena);
+  if (!validacion.valida) {
+    return res.status(400).json({ error: validacion.mensaje });
   }
 
   try {
+    const { data: usuario, error: userError } = await supabase
+      .from('usuario')
+      .select('contrasena')
+      .eq('id_usuario', id_usuario)
+      .single();
+
+    if (userError || !usuario) {
+      return res.status(404).json({ error: 'Usuario no encontrado.' });
+    }
+
+    const { data: historial } = await supabase
+      .from('historial_contrasena')
+      .select('contrasena_hash')
+      .eq('usuario_id_usuario', id_usuario);
+
+    let hashUsado = false;
+    if (historial && historial.length > 0) {
+      for (let rec of historial) {
+        if (await bcrypt.compare(String(contrasena), rec.contrasena_hash)) {
+          hashUsado = true; break;
+        }
+      }
+    }
+    if (!hashUsado) {
+       hashUsado = await bcrypt.compare(String(contrasena), usuario.contrasena);
+    }
+
+    if (hashUsado) {
+      return res.status(400).json({ error: 'La contraseña no puede ser igual a una utilizada anteriormente.' });
+    }
+
     // Hashear la nueva contraseña
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(contrasena, saltRounds);
 
+    await supabase.from('historial_contrasena').insert({
+      usuario_id_usuario: id_usuario,
+      contrasena_hash: hashedPassword
+    });
+
     // Actualizar en Supabase
     const { data, error } = await supabase
       .from('usuario')
-      .update({ contrasena: hashedPassword })
+      .update({ 
+        contrasena: hashedPassword,
+        fecha_cambio_contrasena: new Date().toISOString(),
+        intentos_fallidos: 0,
+        bloqueado_hasta: null
+      })
       .eq('id_usuario', id_usuario)
       .select('id_usuario, nombre_completo, correo');
 
     if (error) {
       throw error;
-    }
-
-    if (!data || data.length === 0) {
-      return res.status(404).json({ error: 'Usuario no encontrado.' });
     }
 
     res.json({ message: 'Contraseña actualizada correctamente.', usuario: data[0] });
@@ -354,7 +438,9 @@ app.use('/api/general', generalRoutes);
 
 const pdfRoute = require('./src/routes/patientPDF.routes');
 const { loginAuth } = require('./src/controllers/auth.controller');
+const securityRoutes = require('./src/routes/security.routes');
 app.use("/api", pdfRoute);
+app.use("/api/seguridad", securityRoutes);
 
 
 app.listen(PORT, () => {
