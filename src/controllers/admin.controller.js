@@ -206,15 +206,19 @@ const pacientesActivos = async (req, res) => {
       .eq('usuario.estado', true); // Filtra solo pacientes con usuario activo
 
     if (error) {
-      console.error('Error al obtener pacientes:', error);
-      return res.status(400).json({ error: error.message });
+      console.error('Error al obtener pacientes en Supabase:', error);
+      throw error;
     }
 
-    // Mapeo manual para limpiar la estructura
+    // Si no hay datos, retornamos un arreglo vacío en lugar de un error
+    if (!data || data.length === 0) {
+      return response(res, 'success', 200, 'No hay pacientes activos en el sistema', []);
+    }
+
+
     const formateado = data.map(p => {
       
-      // 👈 EXTRAEMOS LOS PERMISOS EN UN ARREGLO PLANO
-      // Quedará algo como: ['registrar_glucosa', 'ver_historial_glucosa']
+     
       const listaPermisos = p.usuario?.usuario_permiso?.map(up => up.permiso?.nombre) || [];
 
       return {
@@ -241,15 +245,16 @@ const pacientesActivos = async (req, res) => {
           dosis: String(te.dosis)
         })) || [],
         admitidoPor: p.administrador?.usuario?.nombre_completo,
-        permisos: listaPermisos // 👈 AGREGAMOS LOS PERMISOS AL JSON
+        permisos: listaPermisos 
       };
     });
 
-    return res.status(200).json(formateado);
+    // Retorno exitoso usando el formato estándar
+    return response(res, 'success', 200, 'Pacientes obtenidos correctamente', formateado);
 
   } catch (err) {
-    console.error('Error interno:', err);
-    return res.status(500).json({ error: 'Error del servidor' });
+    console.error('Error interno en pacientesActivos:', err);
+    return response(res, 'error', 500, 'Error del servidor al intentar obtener los pacientes', err.message);
   }
 };
 
