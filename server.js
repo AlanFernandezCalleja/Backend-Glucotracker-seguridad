@@ -126,9 +126,13 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
   const usuario = usuarioData;
   const rolMap = { 
     administrador: 'id_admin', 
+    soporte:'id_admin',
     paciente: 'id_paciente', 
     medico: 'id_medico' 
   };
+  if(usuarioData.rol=="soporte"){
+    usuarioData.rol="administrador";
+  }
   const rolB = rolMap[usuario.rol];
   const { data: rolData, error: rolError } = await supabase
     .from(usuario.rol)
@@ -145,7 +149,7 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
       resultado: 'FALLIDO',
       motivo: 'Rol cuenta'
     });
-    return res.status(401).json({ error: 'Rol cuenta' })
+    return res.status(401).json({ error: rolError.message })
   };
 
   const id_rol = rolData[rolB];
@@ -224,6 +228,9 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
       return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
+    if(usuario.rol=="soporte"){
+      usuario.rol="administrador";
+    }
     // 🔧 configuración por rol
     const rolMap = {
       administrador: { tabla: "administrador", campos: ["id_admin", "cargo"] },
