@@ -418,7 +418,6 @@ const perfilAdmin= async (req, res) => {
 
 
 const agregarAdmin = async (req, res) => {
-  // 1. Ya no recibimos 'cargo' del frontend
   const {
     nombre,
     correo,
@@ -429,18 +428,19 @@ const agregarAdmin = async (req, res) => {
     administrador_id_admin
   } = req.body;
 
+  // 1. Validación de campos obligatorios
   if (!nombre || !correo || !contrasena || !fechaNacimiento || !fecha_registro || !telefono || !administrador_id_admin) {
-    return res.status(400).json({ error: 'Todos los campos deben ser llenados' });
+    return response(res, 'error', 400, 'Todos los campos deben ser llenados obligatoriamente');
   }
 
   try {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(contrasena, saltRounds);
     
-    // 2. Establecemos el cargo de forma estricta en el backend
+    // 2. Definición del cargo administrativo
     const cargoFijo = 'soporte';
 
-    // 3. Insertamos en la tabla usuario
+    // 3. Inserción en la tabla 'usuario'
     const { data: usuarioData, error: usuarioError } = await supabase
       .from('usuario')
       .insert([
@@ -448,10 +448,10 @@ const agregarAdmin = async (req, res) => {
           nombre_completo: nombre,
           correo: correo,
           contrasena: hashedPassword,
-          rol: cargoFijo, // Actualizamos la etiqueta estática del usuario
+          rol: cargoFijo,
           fecha_nac: fechaNacimiento,
           teléfono: telefono,
-          estado: true, // Asumimos que el OSI lo activa inmediatamente al crearlo
+          estado: true, // Activación inmediata por ser personal administrativo
         },
       ])
       .select();
@@ -459,7 +459,7 @@ const agregarAdmin = async (req, res) => {
     if (usuarioError) throw usuarioError;
     const usuario_insertado = usuarioData[0];
 
-    // 4. Insertamos en la tabla administrador
+    // 4. Inserción en la tabla 'administrador'
     const { data: adminData, error: adminError } = await supabase
       .from("administrador")
       .insert([
@@ -474,8 +474,8 @@ const agregarAdmin = async (req, res) => {
 
     if (adminError) throw adminError;
 
-    // 5. NUEVO: Lógica de relación con RBAC
-    // Buscamos el ID dinámico del rol "Soporte" en la BD (ilike ignora mayúsculas/minúsculas)
+    // 5. Asignación de Rol en RBAC (Corrección con UPSERT)
+    // Buscamos primero el ID del rol 'soporte'
     const { data: rolData, error: rolError } = await supabase
       .from('roles')
       .select('id_rol')
@@ -483,31 +483,36 @@ const agregarAdmin = async (req, res) => {
       .single();
 
     if (rolError) {
-      console.error('Error buscando el rol Soporte:', rolError);
       throw new Error('No se encontró el rol de soporte en el catálogo del sistema.');
     }
 
-    // Insertamos la relación en la tabla puente
+    // Usamos upsert para evitar errores de duplicidad si un trigger ya creó la relación
     const { error: usuRolError } = await supabase
       .from('usuario_rol')
-      .insert([
-        {
-          id_usuario: usuario_insertado.id_usuario,
-          id_rol: rolData.id_rol
+      .upsert(
+        [
+          {
+            id_usuario: usuario_insertado.id_usuario,
+            id_rol: rolData.id_rol
+          }
+        ], 
+        { 
+          onConflict: 'id_usuario,id_rol', 
+          ignoreDuplicates: true 
         }
-      ]);
+      );
 
     if (usuRolError) throw usuRolError;
 
-    res.status(200).json({
-      message: 'Personal de soporte registrado y asignado a su rol correctamente',
-      usuario_insertado,
-      adminData
+    // 6. Respuesta exitosa (201 Created)
+    return response(res, 'success', 201, 'Personal de soporte registrado y activado correctamente', {
+      usuario: usuario_insertado,
+      detalle_admin: adminData[0]
     });
 
   } catch (error) {
-    console.error("Error al insertar los datos: ", error.message);
-    res.status(500).json({ error: error.message });
+    console.error("Error en agregarAdmin: ", error.message);
+    return response(res, 'error', 500, 'Error interno al registrar el administrador', error.message);
   }
 };
 
@@ -664,7 +669,9 @@ const obtenerRoles = async (req, res) => {
   try {
     const { data: roles, error } = await supabase
       .from("roles")
-      .select("*");
+      .select("*")
+      .neq('nombre_rol','administrador')
+      .neq('nombre_rol','pendiente');
 
     // ❌ error en la consulta
     if (error) {
@@ -806,6 +813,7 @@ const obtenerRolesPermisos = async (req, res) => {
         )
       `)
       .neq('nombre_rol', 'administrador')
+      .neq('nombre_rol', 'pendiente')
       .order('id_rol', { ascending: true });
 
     if (errR) throw errR;
@@ -889,6 +897,181 @@ const actualizarMatrizRoles = async (req, res) => {
 
 
 
+
+
+const obtenerSolicitudesPendientes = async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('usuario')
+      .select('id_usuario, nombre_completo, correo, telefono:teléfono, fecha_registro')
+      .eq('estado', false)
+      .eq('rol', 'pendiente')
+      .order('fecha_registro', { ascending: false });
+
+    if (error) {
+      console.error('Error en Supabase obteniendo solicitudes:', error);
+      throw error;
+    }
+
+    // Respuesta exitosa utilizando tu helper
+    return response(
+      res, 
+      'success', 
+      200, 
+      'Solicitudes pendientes obtenidas correctamente', 
+      data
+    );
+
+  } catch (error) {
+    console.error('Error en obtenerSolicitudesPendientes:', error.message);
+    
+    // Respuesta de error utilizando tu helper
+    return response(
+      res, 
+      'error', 
+      500, 
+      'Error interno del servidor al cargar las solicitudes'
+    );
+  }
+};
+
+const { v4: uuidv4 } = require('uuid'); // Para nombres de archivos únicos (opcional, o usa Date.now)
+
+// Helper de respuestas que creamos antes
+
+
+const activarCuenta = async (req, res) => {
+  try {
+    const { 
+      id_usuario, 
+      rol_seleccionado, 
+      administrador_id_admin = 1 // Por defecto 1 si no lo envías, idealmente sacarlo del token
+    } = req.body;
+
+    if (!id_usuario || !rol_seleccionado) {
+      return response(res, 'error', 400, 'Faltan datos críticos (id_usuario o rol)');
+    }
+
+    // 1. Buscamos el ID del rol en el sistema
+    const { data: rolData, error: rolError } = await supabase
+      .from('roles')
+      .select('id_rol')
+      .ilike('nombre_rol', rol_seleccionado)
+      .single();
+
+    if (rolError) throw new Error('El rol especificado no existe en el catálogo.');
+    const id_rol = rolData.id_rol;
+
+    // ==========================================
+    // FLUJO PARA PACIENTE
+    // ==========================================
+    if (rol_seleccionado.toLowerCase() === 'paciente') {
+      const { id_medico, id_actividad, genero, peso, altura, enfermedad_id, tratamiento_id, dosis_, nombre_emergencia, numero_emergencia, embarazada, semanas } = req.body;
+      
+      const imgFiles = req.files?.foto_perfil;
+      if (!imgFiles || imgFiles.length === 0) return response(res, 'error', 400, 'Falta la foto de perfil extraída del PDF');
+
+      // Subir imagen
+      const img = imgFiles[0];
+      const imgUpload = await supabase.storage
+        .from('perfiles_pacientes')
+        .upload(`imgs/${Date.now()}_${img.originalname}`, img.buffer, { contentType: img.mimetype });
+      if (imgUpload.error) throw imgUpload.error;
+      const imgUrl = supabase.storage.from('perfiles_pacientes').getPublicUrl(imgUpload.data.path).data.publicUrl;
+
+      // Insertar Paciente
+      const { data: pacienteData, error: pacienteError } = await supabase
+        .from('paciente')
+        .insert([{
+          id_usuario: parseInt(id_usuario),
+          id_medico: parseInt(id_medico),
+          id_nivel_actividad: parseInt(id_actividad),
+          genero,
+          peso: parseFloat(peso),
+          altura: parseFloat(altura),
+          embarazo: embarazada === 'true',
+          nombre_emergencia,
+          numero_emergencia,
+          foto_perfil: imgUrl,
+          administrador_id_admin: parseInt(administrador_id_admin)
+        }]).select();
+      if (pacienteError) throw pacienteError;
+
+      const id_paciente = pacienteData[0].id_paciente;
+
+      // Seguimiento embarazo
+      if (embarazada === 'true' && semanas) {
+        await supabase.from('seguimiento_embarazo').insert({
+          id_paciente, semanas_embarazo: parseInt(semanas)
+        });
+      }
+
+      // Enfermedades y Tratamientos
+      if (enfermedad_id && tratamiento_id) {
+        await supabase.from('paciente_enfermedad').insert({ id_paciente, id_enfermedad: parseInt(enfermedad_id) });
+        await supabase.from('tratamiento_enfermedad').insert({ id_paciente, id_tratamiento: parseInt(tratamiento_id), dosis: dosis_ });
+      }
+    } 
+    // ==========================================
+    // FLUJO PARA MÉDICO
+    // ==========================================
+    else if (rol_seleccionado.toLowerCase() === 'medico') {
+      const { id_especialidad, departamento } = req.body;
+
+      const pdfFiles = req.files?.matriculaProfesional;
+      const carnetFiles = req.files?.carnetProfesional;
+
+      if (!pdfFiles || !carnetFiles) return response(res, 'error', 400, 'Faltan documentos profesionales (Matrícula o Carnet)');
+
+      // Subir archivos
+      const pdfUpload = await supabase.storage.from('Matriculas_PDF').upload(`pdfs/${Date.now()}_${pdfFiles[0].originalname}`, pdfFiles[0].buffer, { contentType: pdfFiles[0].mimetype });
+      const imgUpload = await supabase.storage.from('Carnets_IMG').upload(`imgs/${Date.now()}_${carnetFiles[0].originalname}`, carnetFiles[0].buffer, { contentType: carnetFiles[0].mimetype });
+      
+      if (pdfUpload.error) throw pdfUpload.error;
+      if (imgUpload.error) throw imgUpload.error;
+
+      const pdfUrl = supabase.storage.from('Matriculas_PDF').getPublicUrl(pdfUpload.data.path).data.publicUrl;
+      const imgUrl = supabase.storage.from('Carnets_IMG').getPublicUrl(imgUpload.data.path).data.publicUrl;
+
+      // Insertar Médico
+      const { error: medicoError } = await supabase
+        .from('medico')
+        .insert([{
+          id_usuario: parseInt(id_usuario),
+          id_especialidad: parseInt(id_especialidad),
+          departamento,
+          matricula_profesional: pdfUrl,
+          carnet_profesional: imgUrl,
+          administrador_id_admin: parseInt(administrador_id_admin)
+        }]);
+      if (medicoError) throw medicoError;
+    }
+
+    // ==========================================
+    // ACTIVACIÓN FINAL DE LA CUENTA
+    // ==========================================
+    
+    // Asignar en matriz de permisos (RBAC) con upsert por si acaso
+    await supabase.from('usuario_rol').upsert([{ 
+      id_usuario: parseInt(id_usuario), 
+      id_rol 
+    }], { onConflict: 'id_usuario, id_rol' });
+
+    // Actualizar estado del usuario a Activo y cambiar su etiqueta de rol
+    const { error: updateError } = await supabase
+      .from('usuario')
+      .update({ estado: true, rol: rol_seleccionado })
+      .eq('id_usuario', parseInt(id_usuario));
+    if (updateError) throw updateError;
+
+    return response(res, 'success', 200, `Cuenta activada exitosamente como ${rol_seleccionado.toUpperCase()}`);
+
+  } catch (error) {
+    console.error("❌ Error en activarCuenta:", error);
+    return response(res, 'error', 500, 'Error interno al procesar la activación: ' + error.message);
+  }
+};
+
 module.exports={medicosActivos,medicosSolicitantes,activarMedico,pacientesActivos,pacientesSolicitantes,
   activarPaciente,perfilAdmin,agregarAdmin,obtenerAdmins, actualizarPermisosAdmins, obtenerRoles,insertarRoles,
-   actualizarPermisosPacientes,obtenerRolesPermisos,actualizarMatrizRoles};
+   actualizarPermisosPacientes,obtenerRolesPermisos,actualizarMatrizRoles,obtenerSolicitudesPendientes,activarCuenta};

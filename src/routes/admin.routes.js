@@ -1,15 +1,15 @@
 const express = require('express');
 const router = express.Router();
-
+const multer = require('multer');
 const { pacientesActivos, pacientesSolicitantes, activarPaciente, medicosActivos, medicosSolicitantes, activarMedico,
     perfilAdmin, agregarAdmin, obtenerAdmins,actualizarPermisosAdmins,obtenerRoles,insertarRoles,actualizarPermisosPacientes,
-obtenerRolesPermisos,actualizarMatrizRoles } = require('../controllers/admin.controller');
+obtenerRolesPermisos,actualizarMatrizRoles,obtenerSolicitudesPendientes,activarCuenta } = require('../controllers/admin.controller');
 const auditoriaAdmin = require("../middlewares/auditoria.admin"); 
 const verificarToken = require('../utils/verificarToken'); // La funcion para verificar un token
 const {getPermisos}=require("../utils/getPermisos");
 const verificarPermiso=require("../utils/verifcarPermisos")
 
-router.post('/agregar',  auditoriaAdmin, agregarAdmin);
+router.post('/agregar', verificarToken,getPermisos,verificarPermiso('AGREGAR_ADMIN'), auditoriaAdmin, agregarAdmin);
 router.post('/actualizar-permisos',verificarToken,getPermisos,verificarPermiso('EDITAR_ADMIN'),auditoriaAdmin,actualizarPermisosAdmins)
 
 router.get('/pacientes/activos', verificarToken,getPermisos,verificarPermiso('VER_PACIENTES'), pacientesActivos); // esta peticion usa la funcion de verificar token
@@ -31,6 +31,16 @@ router.put('/actualizarMatriz', verificarToken, actualizarMatrizRoles);
 
 router.post('/roles',insertarRoles);
 router.get('/roles/obtener',obtenerRoles);
+router.get('/solicitudes-pendientes',  obtenerSolicitudesPendientes);
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+
+// Endpoint protegido para Soporte
+router.put('/activar-cuenta',  upload.fields([
+  { name: "foto_perfil", maxCount: 1 },
+  { name: "matriculaProfesional", maxCount: 1 },
+  { name: "carnetProfesional", maxCount: 1 }
+]), activarCuenta);
 
 module.exports = router;
 

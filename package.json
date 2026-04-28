@@ -28,6 +28,7 @@
     "jsonwebtoken": "9.0.2",
     "multer": "2.0.2",
     "nodemailer": "7.0.10",
-    "pdfmake": "0.2.20"
+    "pdfmake": "0.2.20",
+    "uuid": "^14.0.0"
   }
 }

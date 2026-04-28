@@ -153,5 +153,7 @@ const registrarAlerta = async (req, res) => {
   }
 };
 
+
+
 module.exports = { registrarAlerta };
 module.exports = { datosParaGlucosa ,registrarAlerta };

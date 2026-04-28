@@ -351,6 +351,12 @@ app.put('/usuario/:id_usuario/password', async (req, res) => {
 
 
 
+
+
+
+const solicitudRoutes=require('./src/routes/solicitud.routes');
+app.use('/api/solicitudes',solicitudRoutes);
+
 const medicoRoutes = require('./src/routes/medico.routes');
 app.use('/api/medicos', medicoRoutes);
 
