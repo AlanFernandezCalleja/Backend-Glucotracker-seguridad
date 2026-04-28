@@ -126,15 +126,18 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
   const usuario = usuarioData;
   const rolMap = { 
     administrador: 'id_admin', 
+    soporte:'id_admin',
     paciente: 'id_paciente', 
     medico: 'id_medico' 
   };
+  if(usuarioData.rol=="soporte"){
+    usuarioData.rol="administrador";
+  }
   const rolB = rolMap[usuario.rol];
   const { data: rolData, error: rolError } = await supabase
     .from(usuario.rol)
     .select(rolB)
-    .eq("id_usuario", usuario.id_usuario)
-    .single();
+    .eq("id_usuario", usuario.id_usuario);
 
   if (rolError || !rolData) {
     console.log({
@@ -146,7 +149,7 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
       resultado: 'FALLIDO',
       motivo: 'Rol cuenta'
     });
-    return res.status(401).json({ error: 'Rol cuenta' })
+    return res.status(401).json({ error: rolError.message })
   };
 
   const id_rol = rolData[rolB];
@@ -200,106 +203,117 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
 
 
 const { getOTP, deleteOTP } = require('./otpCache');
-
+const  {generateToken}  = require('./src/utils/auth');
 app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
   const { id_usuario, codigo } = req.body;
+
   try {
-    // Verificar OTP en cache
+    // 🔐 validar OTP
     const cachedOTP = getOTP(id_usuario);
 
     if (!cachedOTP || cachedOTP !== codigo) {
-      console.log({
-        fecha: new Date().toISOString(),
-        endpoint: '/api/verify-otp',
-        metodo: 'POST',
-        id_usuario,
-        ip: req.ip,
-        resultado: 'FALLIDO',
-        motivo: 'Código incorrecto o expirado'
-      });
       return res.status(401).json({ error: 'Código incorrecto o expirado' });
     }
 
-    // OTP correcto: eliminar de cache
     deleteOTP(id_usuario);
 
-    // Obtener datos completos de usuario y rol
-    const { data: usuarioData, error: usuarioError } = await supabase
+    // 👤 obtener usuario
+    const { data: usuario, error: usuarioError } = await supabase
       .from("usuario")
-      .select("id_usuario, rol")
+      .select("id_usuario, correo, rol")
       .eq("id_usuario", id_usuario)
       .single();
 
-    if (usuarioError || !usuarioData) {
-      console.log({
-        fecha: new Date().toISOString(),
-        endpoint: '/api/verify-otp',
-        metodo: 'POST',
-        id_usuario,
-        ip: req.ip,
-        resultado: 'FALLIDO',
-        motivo: 'Usuario no encontrado'
-      });
-      return res.status(401).json({ error: 'Usuario no encontrado' });
+    if (usuarioError || !usuario) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
-    let id_rol = 0;
-    const rol = usuarioData.rol;
+    if(usuario.rol=="soporte"){
+      usuario.rol="administrador";
+    }
+    // 🔧 configuración por rol
+    const rolMap = {
+      administrador: { tabla: "administrador", campos: ["id_admin", "cargo"] },
+      medico: { tabla: "medico", campos: ["id_medico"] },
+      paciente: { tabla: "paciente", campos: ["id_paciente"] }
+    };
 
-    if (rol === "administrador") {
-      const { data: adminData } = await supabase
-        .from("administrador")
-        .select("id_admin")
-        .eq("id_usuario", id_usuario)
-        .single();
-      id_rol = adminData.id_admin;
-    } else if (rol === "medico") {
-      const { data: medicoData } = await supabase
-        .from("medico")
-        .select("id_medico")
-        .eq("id_usuario", id_usuario)
-        .single();
-      id_rol = medicoData.id_medico;
+    const config = rolMap[usuario.rol];
+
+    if (!config) {
+      return res.status(400).json({ error: "Rol inválido" });
+    }
+
+    // 🧩 obtener datos del rol
+    const { data: rolData, error: rolError } = await supabase
+      .from(config.tabla)
+      .select(config.campos.join(", "))
+      .eq("id_usuario", id_usuario)
+      .single();
+
+    if (rolError || !rolData) {
+      return res.status(404).json({ error: "Rol no encontrado" });
+    }
+
+    // 🎯 normalizar id_rol y cargo
+    let id_rol;
+    let cargo = null;
+
+    if (usuario.rol === "administrador") {
+      id_rol = rolData.id_admin;
+      cargo = rolData.cargo;
+    } else if (usuario.rol === "medico") {
+      id_rol = rolData.id_medico;
     } else {
-      const { data: pacienteData } = await supabase
-        .from("paciente")
-        .select("id_paciente")
-        .eq("id_usuario", id_usuario)
-        .single();
-      id_rol = pacienteData.id_paciente;
+      id_rol = rolData.id_paciente;
     }
-    console.log({
-      fecha: new Date().toISOString(),
-      endpoint: '/api/verify-otp',
-      metodo: 'POST',
-      id_usuario,
-      rol,
+
+    // 🔐 permisos (solo admin por ahora)
+    let permisos = [];
+
+    if (usuario.rol === "administrador") {
+      const { data: permisosData } = await supabase
+        .from("admin_permiso")
+        .select("permiso(nombre)")
+        .eq("id_admin", id_rol);
+
+      permisos = permisosData?.map(p => p.permiso.nombre) || [];
+    }
+
+    // 🎟️ token
+    const token = generateToken({
+      id_usuario: usuario.id_usuario,
+      correo: usuario.correo,
+      rol: usuario.rol,
       id_rol,
-      ip: req.ip,
-      resultado: 'EXITOSO',
-      mensaje: 'Login exitoso'
+      permisos
     });
-    res.status(200).json({
-      id_usuario,
-      rol,
-      id_rol,
-      message: 'Login exitoso'
+
+    // 🍪 cookie
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 5 * 60 * 60 * 1000
     });
+
+    // 📤 respuesta final
+    res.json({
+      message: 'Login exitoso',
+      usuario: {
+        id_usuario: usuario.id_usuario,
+        rol: usuario.rol,
+        id_rol,
+        ...(cargo ? { cargo } : {}), // 👈 SOLO ADMIN
+        permisos
+      }
+    });
+
   } catch (error) {
-    console.log({
-      fecha: new Date().toISOString(),
-      endpoint: '/api/verify-otp',
-      metodo: 'POST',
-      id_usuario,
-      ip: req.ip,
-      resultado: 'FALLIDO',
-      motivo: error.message
-    });
+    console.error(error);
     res.status(500).json({ error: 'Error interno' });
   }
 });
-
-
 app.put('/usuario/:id_usuario/password', async (req, res) => {
   const { id_usuario } = req.params;
   const { contrasena } = req.body;
@@ -336,6 +350,12 @@ app.put('/usuario/:id_usuario/password', async (req, res) => {
 });
 
 
+
+
+
+
+const solicitudRoutes=require('./src/routes/solicitud.routes');
+app.use('/api/solicitudes',solicitudRoutes);
 
 const medicoRoutes = require('./src/routes/medico.routes');
 app.use('/api/medicos', medicoRoutes);

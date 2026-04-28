@@ -27,20 +27,25 @@ const loginPrueba = async (req, res) => {
         }
         const usuario = usuarioData;
         
-
+        
         // 2. Verificar la contraseña usando Bcrypt
         const isValid = await verifyPassword(contrasena, usuario.contrasena);
         
-
+        const { data: adminData } = await supabase
+            .from("administrador")
+            .select("id_admin, cargo")
+            .eq("id_usuario", usuario.id_usuario)
+            .maybeSingle();
+        usuario.id_admin=adminData?.id_admin||null;
         // 3. Generar el JWT
         const token = generateToken(usuario);
-
+        cargo_admin=adminData.cargo;
         // Establecer cookie httpOnly con el token
         res.cookie('token', token, {
             httpOnly: true,   // No accesible desde JavaScript (protege contra XSS)
             secure: process.env.NODE_ENV === 'production', // Solo HTTPS en producción
             sameSite: 'strict', // Protege contra CSRF
-            maxAge: 8 * 60 * 60 * 1000 // 8 horas (coincide con expiresIn del token)
+            maxAge: 8 * 60 * 60 * 1000 
         });
 
         // 4. Devolver el token al cliente
@@ -49,7 +54,10 @@ const loginPrueba = async (req, res) => {
             token: 'Generado correctamente',
             usuario: {
                 id_usuario: usuario.id_usuario,
-                rol: usuario.rol
+                rol: usuario.rol,
+                id_rol:usuario.id_admin,
+                cargo:cargo_admin
+                
             }
         });
 
