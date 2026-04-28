@@ -1,7 +1,8 @@
 const supabase = require('../../database');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 const { sendEmail } = require('../email/sendEmail');
-const { getOtpTemplate } = require('../email/templates');
+const { getOtpTemplate, getRecuperacionTemplate, getDesbloqueoTemplate } = require('../email/templates');
 const { setOTP, getOTP, deleteOTP } = require('../../otpCache');
 const { esContrasenaRobusta } = require('../utils/security');
 
@@ -23,7 +24,7 @@ const solicitarRecuperacion = async (req, res) => {
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         setOTP(`recuperacion_${usuario.correo}`, otp, 10 * 60 * 1000); // 10 min
 
-        const { subject, html } = getOtpTemplate({
+        const { subject, html } = getRecuperacionTemplate({
             nombreUsuario: usuario.correo,
             codigo: otp
         });
@@ -37,15 +38,54 @@ const solicitarRecuperacion = async (req, res) => {
     }
 };
 
-// 2. Cambiar contraseña usando OTP
-const cambiarContrasena = async (req, res) => {
-    const { correo, codigo, nueva_contrasena } = req.body;
-    
+// 1.5 Verificar código OTP y emitir JWT
+const verificarCodigoRecuperacion = async (req, res) => {
+    const { correo, codigo } = req.body;
     try {
         const cachedOTP = getOTP(`recuperacion_${correo}`);
         if (!cachedOTP || cachedOTP !== codigo) {
             return res.status(400).json({ error: 'Código inválido o expirado.' });
         }
+
+        // Eliminar OTP para que no se use de nuevo
+        deleteOTP(`recuperacion_${correo}`);
+
+        // Generar JWT temporal (15 min)
+        const token = jwt.sign(
+            { correo, tipo: 'recuperacion' },
+            process.env.JWT_SECRET,
+            { expiresIn: '15m' }
+        );
+
+        res.status(200).json({ message: 'Código verificado exitosamente.', token });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Error interno.' });
+    }
+};
+
+// 2. Cambiar contraseña usando JWT temporal
+const cambiarContrasena = async (req, res) => {
+    const { nueva_contrasena } = req.body;
+    
+    // Obtener JWT del header
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+        return res.status(401).json({ error: 'Se requiere token de autorización.' });
+    }
+
+    let correo;
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded.tipo !== 'recuperacion') {
+            return res.status(403).json({ error: 'Token inválido para esta operación.' });
+        }
+        correo = decoded.correo;
+    } catch (error) {
+        return res.status(401).json({ error: 'Token inválido o expirado.' });
+    }
+
+    try {
 
         // Validar contraseña robusta
         const validacion = esContrasenaRobusta(nueva_contrasena);
@@ -86,9 +126,6 @@ const cambiarContrasena = async (req, res) => {
         if (hashUsado) {
             return res.status(400).json({ error: 'La nueva contraseña no puede ser igual a una utilizada anteriormente.' });
         }
-
-        // Eliminar OTP
-        deleteOTP(`recuperacion_${correo}`);
 
         // Hashear y actualizar
         const hashedPassword = await bcrypt.hash(nueva_contrasena, 10);
@@ -132,7 +169,7 @@ const solicitarDesbloqueo = async (req, res) => {
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         setOTP(`desbloqueo_${usuario.correo}`, otp, 15 * 60 * 1000); // 15 min
 
-        const { subject, html } = getOtpTemplate({
+        const { subject, html } = getDesbloqueoTemplate({
             nombreUsuario: usuario.correo,
             codigo: otp
         });
@@ -174,6 +211,7 @@ const confirmarDesbloqueo = async (req, res) => {
 
 module.exports = {
     solicitarRecuperacion,
+    verificarCodigoRecuperacion,
     cambiarContrasena,
     solicitarDesbloqueo,
     confirmarDesbloqueo

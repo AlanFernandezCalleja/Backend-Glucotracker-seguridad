@@ -51,5 +51,30 @@ const getOtpTemplate = ({ nombreUsuario, codigo }) => ({
   `
 });
 
-module.exports = { getHipoTemplate, getHiperTemplate, getOtpTemplate };
+// Template correo Codigo: Recuperación y cambio de contraseña
+const getRecuperacionTemplate = ({ nombreUsuario, codigo }) => ({
+  subject: `Código para recuperar/cambiar contraseña - GlucoTracker`,
+  html: `
+    <p>Hola ${nombreUsuario},</p>
+    <p>Has solicitado recuperar o cambiar tu contraseña. Tu código de verificación es:</p>
+    <h2>${codigo}</h2>
+    <p>Este código expirará en 10 minutos.</p>
+    <p>Si no solicitaste este cambio, por favor ignora este correo y asegúrate de que tu cuenta esté segura.</p>
+    <p>Atentamente,<br>GlucoTracker</p>
+  `
+});
 
+// Template correo Codigo: Desbloqueo de cuenta
+const getDesbloqueoTemplate = ({ nombreUsuario, codigo }) => ({
+  subject: `Código para desbloquear cuenta - GlucoTracker`,
+  html: `
+    <p>Hola ${nombreUsuario},</p>
+    <p>Tu cuenta ha sido bloqueada por múltiples intentos fallidos de inicio de sesión. Tu código de verificación para desbloquearla es:</p>
+    <h2>${codigo}</h2>
+    <p>Este código expirará en 15 minutos.</p>
+    <p>Si no intentaste iniciar sesión, te recomendamos cambiar tu contraseña lo antes posible.</p>
+    <p>Atentamente,<br>GlucoTracker</p>
+  `
+});
+
+module.exports = { getHipoTemplate, getHiperTemplate, getOtpTemplate, getRecuperacionTemplate, getDesbloqueoTemplate };
