@@ -14,7 +14,7 @@ const generateToken = (usuario) => {
     id_usuario: usuario.id_usuario,
     correo: usuario.correo,
     rol: usuario.rol, // 
-    id_rol: usuario.id_rol
+    id_admin: usuario.id_admin
   };
 
   // Firmamos el token con una expiración (ej. 2 horas)
