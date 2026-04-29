@@ -27,12 +27,13 @@ const verificarToken = require('../utils/verificarToken');
 const verificarPermiso=require("../utils/verifcarPermisos")
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
+/*
 router.post('/registrar', upload.fields([
   { name: "matriculaProfesional", maxCount: 1 },
   { name: "carnetProfesional", maxCount: 1 },
-]), registrarMedico);
+]), registrarMedico);*/
 
-router.post('/responder/alerta', auditoriaMedico, retroalimentacionAlerta);
+router.post('/responder/alerta', verificarToken,getPermisos,verificarPermiso('VER_ALERTA'),auditoriaMedico, retroalimentacionAlerta);
 router.post('/registrar/glucosa', verificarToken,getPermisos,verificarPermiso('REGISTRAR_GLUCOSA'),auditoriaMedico, registrarGlucosaMedico)
 router.get('/perfil/:idUsuario',verificarToken,getPermisos,verificarPermiso('VER_HISTORIAL_GLUCOSA'), auditoriaMedico, perfilMedico);
 router.get('/ver', verMedicos);
