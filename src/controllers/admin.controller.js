@@ -1,5 +1,73 @@
 const supabase = require('../../database'); // tu cliente Supabase
 const bcrypt=require('bcrypt')
+const {sendEmail}=require('../email/sendEmail')
+const {getWelcomeAdminTemplate}=require('../email/templates')
+const response = (res, status, code, message, data = null) => {
+  return res.status(code).json({
+    status,
+    code,
+    message,
+    data
+  });
+};
+
+const medicosCompletos= async (req, res) => {
+  try {
+    const { data: medicosBD, error } = await supabase
+      .from('medico')
+      .select(`
+        id:id_medico,
+        matricula:matricula_profesional,
+        departamento,
+        carnet:carnet_profesional,
+        usuario!inner (
+          id_usuario,
+          nombre_completo,
+          fecha_nac,
+          telefono:teléfono,
+          correo,
+          estado
+        ),
+        administrador (
+          usuario (
+            nombre_completo
+          )
+        )
+      `);
+
+    if (error) {
+      console.error('Error en consulta Supabase (medicosActivos):', error.message);
+      throw error; // Lo mandamos al catch para un manejo unificado
+    }
+
+    // Si no hay médicos activos, devolvemos un arreglo vacío con éxito
+    if (!medicosBD || medicosBD.length === 0) {
+      return response(res, 'success', 200, 'No hay médicos activos en el sistema', []);
+    }
+
+    // Aplanamos el objeto para que coincida exactamente con tu interfaz del frontend
+    const formateado = medicosBD.map(m => ({
+      id: m.id,
+      id_usuario:m.usuario?.id_usuario,
+      estado:m.usuario?.estado,
+      nombre: m.usuario?.nombre_completo,
+      fechaNac: m.usuario?.fecha_nac,
+      telefono: m.usuario?.telefono,
+      correo: m.usuario?.correo,
+      matricula: m.matricula,
+      departamento: m.departamento,
+      carnet: m.carnet,
+      admitidoPor: m.administrador?.usuario?.nombre_completo
+    }));
+
+    // Respuesta exitosa estandarizada
+    return response(res, 'success', 200, 'Lista de médicos activos obtenida correctamente', formateado);
+
+  } catch (err) {
+    console.error('Error interno en medicosActivos:', err.message);
+    return response(res, 'error', 500, 'Error interno del servidor al procesar la lista de médicos', err.message);
+  }
+};
 const medicosActivos = async (req, res) => {
   try {
     const { data: medicosBD, error } = await supabase
@@ -21,8 +89,7 @@ const medicosActivos = async (req, res) => {
             nombre_completo
           )
         )
-      `)
-      .eq('usuario.estado', true);
+      `);
 
     if (error) {
       console.error('Error en consulta Supabase (medicosActivos):', error.message);
@@ -55,7 +122,7 @@ const medicosActivos = async (req, res) => {
     return response(res, 'error', 500, 'Error interno del servidor al procesar la lista de médicos', err.message);
   }
 };
-
+/*
 const medicosSolicitantes = async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -104,7 +171,8 @@ const medicosSolicitantes = async (req, res) => {
     console.error('Error interno:', err);
     return res.status(500).json({ error: 'Error del servidor' });
   }
-};
+};*/
+/*
 const activarMedico = async (req, res) => {
   const idMedico = req.params.idMedico;
   const { idAdmin } = req.body;
@@ -156,8 +224,9 @@ console.log('PARAMS:', req.params);
     });
   }
 };
-
+*/
 // controllers/pacientes.controller.js
+
 const pacientesActivos = async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -171,6 +240,8 @@ const pacientesActivos = async (req, res) => {
         nombre_emergencia,
         numero_emergencia,
         usuario!inner (
+          id_usuario,
+          estado,
           nombre:nombre_completo,
           correo,
           fechaNac:fecha_nac,
@@ -222,6 +293,8 @@ const pacientesActivos = async (req, res) => {
 
       return {
         id: p.id,
+        id_usuario:p.usuario?.id_usuario,
+        estado:p.usuario?.estado,
         nombre: p.usuario?.nombre,
         ci: p.usuario?.correo, 
         fechaNac: p.usuario?.fechaNac, 
@@ -256,6 +329,112 @@ const pacientesActivos = async (req, res) => {
   }
 };
 
+
+
+
+
+const pacientesCompletos = async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('paciente')
+      .select(`
+        id:id_paciente,
+        genero,
+        peso,
+        altura,
+        foto_perfil,
+        nombre_emergencia,
+        numero_emergencia,
+        usuario!inner (
+          id_usuario,
+          estado,
+          nombre:nombre_completo,
+          correo,
+          fechaNac:fecha_nac,
+          telefono:teléfono,
+          estado
+        ),
+        nivel_actividad_fisica (
+          descripcion
+        ),
+        medico (
+          usuario (
+            nombre_completo
+          )
+        ),
+        administrador (
+          usuario (
+            nombre_completo
+          )
+        ),
+        paciente_enfermedad (
+          enfermedades_base (
+            nombre_enfermedad
+          )
+        ),
+        tratamiento_enfermedad (
+          tratamientos (
+            nombre_tratamiento,
+            descripcion
+          ),
+          dosis
+        )
+      `);
+
+    if (error) {
+      console.error('Error al obtener pacientes en Supabase:', error);
+      throw error;
+    }
+
+    // Si no hay datos, retornamos un arreglo vacío en lugar de un error
+    if (!data || data.length === 0) {
+      return response(res, 'success', 200, 'No hay pacientes activos en el sistema', []);
+    }
+
+
+    const formateado = data.map(p => {
+      
+     
+
+      return {
+        id: p.id,
+        id_usuario:p.usuario?.id_usuario,
+        estado:p.usuario?.estado,
+        nombre: p.usuario?.nombre,
+        ci: p.usuario?.correo, 
+        fechaNac: p.usuario?.fechaNac, 
+        genero: p.genero,
+        peso: String(p.peso),
+        altura: String(p.altura),
+        actividadFisica: p.nivel_actividad_fisica?.descripcion,
+        telefono: p.usuario?.telefono,
+        correo: p.usuario?.correo,
+        nombre_emergencia: p.nombre_emergencia,
+        numero_emergencia: p.numero_emergencia,
+        medico: p.medico?.usuario?.nombre_completo,
+        foto_perfil: p.foto_perfil,
+        afecciones: p.paciente_enfermedad?.map(pe => ({
+          afeccion: pe.enfermedades_base?.nombre_enfermedad
+        })) || [],
+        tratamientos: p.tratamiento_enfermedad?.map(te => ({
+          titulo: te.tratamientos?.nombre_tratamiento,
+          desc: te.tratamientos?.descripcion,
+          dosis: String(te.dosis)
+        })) || [],
+        admitidoPor: p.administrador?.usuario?.nombre_completo,
+      };
+    });
+
+    // Retorno exitoso usando el formato estándar
+    return response(res, 'success', 200, 'Pacientes obtenidos correctamente', formateado);
+
+  } catch (err) {
+    console.error('Error interno en pacientesActivos:', err);
+    return response(res, 'error', 500, 'Error del servidor al intentar obtener los pacientes', err.message);
+  }
+};
+
+/*
 const pacientesSolicitantes = async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -342,9 +521,9 @@ const pacientesSolicitantes = async (req, res) => {
     return res.status(500).json({ error: 'Error del servidor' });
   }
 };
+*/
 
-
-
+/*
 const activarPaciente= async (req, res) => {
   const idPaciente = req.params.idPaciente;
     const { idAdmin } = req.body;
@@ -393,7 +572,7 @@ const activarPaciente= async (req, res) => {
     res.status(500).json({ error: 'Error del servidor', detalles: err.message });
   }
 };
-
+*/
 
 const perfilAdmin = async (req, res) => {
   try {
@@ -483,10 +662,9 @@ const agregarAdmin = async (req, res) => {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(contrasena, saltRounds);
     
-    // 2. Definición del cargo administrativo
     const cargoFijo = 'soporte';
 
-    // 3. Inserción en la tabla 'usuario'
+    // 2. Inserción en la tabla 'usuario'
     const { data: usuarioData, error: usuarioError } = await supabase
       .from('usuario')
       .insert([
@@ -497,7 +675,7 @@ const agregarAdmin = async (req, res) => {
           rol: cargoFijo,
           fecha_nac: fechaNacimiento,
           teléfono: telefono,
-          estado: true, // Activación inmediata por ser personal administrativo
+          estado: true, // Activación inmediata
         },
       ])
       .select();
@@ -505,7 +683,7 @@ const agregarAdmin = async (req, res) => {
     if (usuarioError) throw usuarioError;
     const usuario_insertado = usuarioData[0];
 
-    // 4. Inserción en la tabla 'administrador'
+    // 3. Inserción en la tabla 'administrador'
     const { data: adminData, error: adminError } = await supabase
       .from("administrador")
       .insert([
@@ -520,19 +698,15 @@ const agregarAdmin = async (req, res) => {
 
     if (adminError) throw adminError;
 
-    // 5. Asignación de Rol en RBAC (Corrección con UPSERT)
-    // Buscamos primero el ID del rol 'soporte'
+    // 4. Asignación de Rol en RBAC
     const { data: rolData, error: rolError } = await supabase
       .from('roles')
       .select('id_rol')
       .ilike('nombre_rol', 'soporte')
       .single();
 
-    if (rolError) {
-      throw new Error('No se encontró el rol de soporte en el catálogo del sistema.');
-    }
+    if (rolError) throw new Error('No se encontró el rol de soporte en el catálogo del sistema.');
 
-    // Usamos upsert para evitar errores de duplicidad si un trigger ya creó la relación
     const { error: usuRolError } = await supabase
       .from('usuario_rol')
       .upsert(
@@ -542,16 +716,30 @@ const agregarAdmin = async (req, res) => {
             id_rol: rolData.id_rol
           }
         ], 
-        { 
-          onConflict: 'id_usuario,id_rol', 
-          ignoreDuplicates: true 
-        }
+        { onConflict: 'id_usuario,id_rol', ignoreDuplicates: true }
       );
 
     if (usuRolError) throw usuRolError;
 
-    // 6. Respuesta exitosa (201 Created)
-    return response(res, 'success', 201, 'Personal de soporte registrado y activado correctamente', {
+    // ------------------------------------------------------------
+    // 5. ENVÍO DE CORREO ELECTRÓNICO (Notificación de Credenciales)
+    // ------------------------------------------------------------
+    try {
+      const template = getWelcomeAdminTemplate({
+        nombreAdmin: nombre,
+        correo: correo,
+        contrasena: contrasena // Enviamos la contraseña plana original
+      });
+
+      await sendEmail(correo, template.subject, template.html);
+    } catch (mailError) {
+      // Logeamos el error del correo pero no detenemos la respuesta, 
+      // ya que el admin ya fue creado en la base de datos.
+      console.error("Error al enviar correo de bienvenida:", mailError.message);
+    }
+
+    // 6. Respuesta exitosa
+    return response(res, 'success', 201, 'Personal de soporte registrado y correo enviado correctamente', {
       usuario: usuario_insertado,
       detalle_admin: adminData[0]
     });
@@ -568,90 +756,70 @@ const obtenerAdmins = async (req, res) => {
     const { idAdmin } = req.params;
 
     if (!idAdmin) {
-      return res.status(400).json({ error: "El código de usuario es requerido" });
+      return response(res, 'error', 400, 'El ID de administrador solicitante es requerido');
     }
 
     // 2. Ejecutamos 1 sola consulta emulando los JOINs
     const { data, error } = await supabase
-  .from('administrador')
-  .select(`
-    id_admin,
-    cargo,
-    fecha_ingreso,
-    usuario!inner (
-      nombre_completo,
-      correo,
-      fecha_nac,
-      teléfono
-    ),
-    administrador (
-      usuario (
-        nombre_completo
-      )
-    ),
-    admin_permiso (
-      permiso (
-        nombre
-      )
-    )
-  `)
-  .neq('id_admin', 1)
-  .neq('usuario.id_usuario', idAdmin); // 👈 ¡LA MEJORA! Excluye al solicitante directamente usando el código de la tabla usuario
+      .from('administrador')
+      .select(`
+        id_admin,
+        cargo,
+        fecha_ingreso,
+        usuario!inner (
+          id_usuario,
+          nombre_completo,
+          correo,
+          fecha_nac,
+          teléfono,
+          estado
+        ),
+        administrador (
+          usuario (
+            nombre_completo
+          )
+        )
+      `)
+      .neq('id_admin', 1)
+      .neq('usuario.id_usuario', idAdmin);
 
     if (error) {
-      console.error('Error obteniendo admins visibles:', error);
-      return res.status(500).json({ error: error.message });
+      console.error('Error en consulta Supabase (obtenerAdmins):', error.message);
+      throw error; // Lo enviamos al catch
+    }
+
+    // Validación por si no hay más administradores
+    if (!data || data.length === 0) {
+      return response(res, 'success', 200, 'No hay otros administradores registrados en el sistema', []);
     }
 
     // 3. Mapeamos (aplanamos) los resultados para Angular
-   const adminsFormateados = data.map((a) => {
+    const adminsFormateados = data.map((a) => {
+      return {
 
-  let nombreAdmin = null;
-  if (a.administrador && a.administrador.usuario) {
-    nombreAdmin = a.administrador.usuario.nombre_completo;
-  }
-
-  // 🧠 convertir lista de permisos a objeto booleano
-  const permisos = {
-    editar: false,
-    eliminar: false,
-    ver: false,
-    agregar: false
-  };
-
-  if (a.admin_permiso) {
-    a.admin_permiso.forEach(p => {
-      const nombre = p.permiso.nombre;
-
-      if (nombre === 'EDITAR_ADMIN') permisos.editar = true;
-      if (nombre === 'ELIMINAR_ADMIN') permisos.eliminar = true;
-      if (nombre === 'VER_ADMIN') permisos.ver = true;
-      if (nombre === 'AGREGAR_ADMIN') permisos.agregar = true;
+        id_admin: a.id_admin,
+        id_usuario: a.usuario?.id_usuario,
+        nombre: a.usuario?.nombre_completo,
+        correo: a.usuario?.correo,
+        fechaNac: a.usuario?.fecha_nac,
+        telefono: a.usuario?.teléfono,
+        cargo: a.cargo,
+        fechaIn: a.fecha_ingreso,
+        // Optional Chaining (?.): Si 'administrador' o 'usuario' no existen, devuelve null automáticamente
+        admitidoPor: a.administrador?.usuario?.nombre_completo || null,
+        estado: a.usuario?.estado
+      };
     });
-  }
 
-  return {
-    id: a.id_admin,
-    nombre: a.usuario.nombre_completo,
-    correo: a.usuario.correo,
-    fechaNac: a.usuario.fecha_nac,
-    telefono: a.usuario.teléfono,
-    cargo: a.cargo,
-    fechaIn: a.fecha_ingreso,
-    admitidoPor: nombreAdmin,
-    permisos // 👈 🔥 AHORA VIENE DESDE BD
-  };
-});
-
-    // 4. Devolvemos el JSON limpio
-    return res.status(200).json(adminsFormateados);
+    // 4. Devolvemos el JSON limpio en el formato estandarizado
+    return response(res, 'success', 200, 'Lista de administradores obtenida correctamente', adminsFormateados);
 
   } catch (err) {
-    console.error('Error interno en obtenerAdminsVisibles:', err);
-    return res.status(500).json({ error: 'Error del servidor' });
+    console.error('Error interno en obtenerAdmins:', err.message);
+    return response(res, 'error', 500, 'Error interno del servidor al procesar la solicitud', err.message);
   }
 };
-
+/*
 const actualizarPermisosAdmins = async (req, res) => {
   try {
     const admins = req.body;
@@ -709,7 +877,7 @@ const actualizarPermisosAdmins = async (req, res) => {
     console.error(error);
     res.status(500).json({ error: 'Error actualizando permisos' });
   }
-};
+};*/
 
 const obtenerRoles = async (req, res) => {
   try {
@@ -763,15 +931,8 @@ const insertarRoles = async (req, res) => {
   }
 };
 
-const response = (res, status, code, message, data = null) => {
-  return res.status(code).json({
-    status,
-    code,
-    message,
-    data
-  });
-};
 
+/*
 
 // controlador de permisos
 const actualizarPermisosPacientes = async (req, res) => {
@@ -837,7 +998,7 @@ const actualizarPermisosPacientes = async (req, res) => {
     console.error('Error al actualizar permisos:', err);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
-};
+};*/
 const obtenerRolesPermisos = async (req, res) => {
   try {
     // 1. Obtenemos primero el catálogo maestro de todos los permisos del sistema
@@ -1118,6 +1279,103 @@ const activarCuenta = async (req, res) => {
   }
 };
 
-module.exports={medicosActivos,medicosSolicitantes,activarMedico,pacientesActivos,pacientesSolicitantes,
-  activarPaciente,perfilAdmin,agregarAdmin,obtenerAdmins, actualizarPermisosAdmins, obtenerRoles,insertarRoles,
-   actualizarPermisosPacientes,obtenerRolesPermisos,actualizarMatrizRoles,obtenerSolicitudesPendientes,activarCuenta};
+const suspenderUsuario = async (req, res) => {
+  const id_usuario = parseInt(req.params.id_usuario);
+
+  // 1️⃣ Validación del ID
+  if (isNaN(id_usuario)) {
+    return response(res, 'error', 400, 'El ID de usuario proporcionado no es válido');
+  }
+
+  try {
+    // 2️⃣ Ejecutar la actualización en Supabase
+    const { data, error } = await supabase
+      .from('usuario')
+      .update({ estado: false })
+      .eq('id_usuario', id_usuario)
+      .select('id_usuario, nombre_completo, estado')
+      .single();
+
+    // 3️⃣ Manejo de errores de base de datos
+    if (error) {
+      console.error('Error en Supabase (suspenderUsuario):', error.message);
+      throw error;
+    }
+
+    // 4️⃣ Verificar si el usuario existía
+    if (!data) {
+      return response(res, 'error', 404, 'No se encontró el usuario que intentas suspender');
+    }
+
+    // 5️⃣ Respuesta exitosa estandarizada
+    return response(
+      res, 
+      'success', 
+      200, 
+      `El usuario ${data.nombre_completo} ha sido suspendido correctamente`, 
+      data
+    );
+
+  } catch (err) {
+    console.error('Error interno al suspender usuario:', err.message);
+    return response(
+      res, 
+      'error', 
+      500, 
+      'Error interno del servidor al procesar la suspensión del usuario', 
+      err.message
+    );
+  }
+};
+
+const reactivarUsuario = async (req, res) => {
+  const id_usuario = parseInt(req.params.id_usuario);
+
+  // 1️⃣ Validación del ID
+  if (isNaN(id_usuario)) {
+    return response(res, 'error', 400, 'El ID de usuario proporcionado no es válido');
+  }
+
+  try {
+    // 2️⃣ Ejecutar la actualización en Supabase
+    const { data, error } = await supabase
+      .from('usuario')
+      .update({ estado: true })
+      .eq('id_usuario', id_usuario)
+      .select('id_usuario, nombre_completo, estado')
+      .single();
+
+    // 3️⃣ Manejo de errores de base de datos
+    if (error) {
+      console.error('Error en Supabase (activarUsuario):', error.message);
+      throw error;
+    }
+
+    // 4️⃣ Verificar si el usuario existía
+    if (!data) {
+      return response(res, 'error', 404, 'No se encontró el usuario que intentas activar');
+    }
+
+    // 5️⃣ Respuesta exitosa estandarizada
+    return response(
+      res, 
+      'success', 
+      200, 
+      `La cuenta de ${data.nombre_completo} ha sido reactivada con éxito`, 
+      data
+    );
+
+  } catch (err) {
+    console.error('Error interno al activar usuario:', err.message);
+    return response(
+      res, 
+      'error', 500, 
+      'Error interno del servidor al procesar la activación del usuario', 
+      err.message
+    );
+  }
+};
+
+module.exports={medicosActivos,/*medicosSolicitantes,activarMedico,*/pacientesActivos, pacientesCompletos,/*pacientesSolicitantes,
+  activarPaciente,*/perfilAdmin,agregarAdmin,obtenerAdmins, /*actualizarPermisosAdmins, */obtenerRoles,insertarRoles,
+   /*actualizarPermisosPacientes,*/obtenerRolesPermisos,actualizarMatrizRoles,obtenerSolicitudesPendientes,activarCuenta,suspenderUsuario,reactivarUsuario,medicosCompletos};

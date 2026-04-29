@@ -13,7 +13,7 @@ const verificarPermiso=require("../utils/verifcarPermisos")
 
 
 
-router.get('/perfil/:idPaciente',verificarToken,getPermisos,verificarPermiso('VER_HISTORIAL_GLUCOSA'),auditoriaPaciente,perfilPaciente);
+router.get('/perfil/:idPaciente',auditoriaPaciente,perfilPaciente);
 router.get('/registros/:idPaciente',verificarToken,getPermisos,verificarPermiso('VER_HISTORIAL_GLUCOSA'),auditoriaPaciente,registrosPaciente);
 
 router.post('/registrarGlucosa',verificarToken,getPermisos,verificarPermiso('REGISTRAR_GLUCOSA'),auditoriaPaciente,registrarGlucosa);
