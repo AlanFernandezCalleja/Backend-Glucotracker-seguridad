@@ -1,6 +1,7 @@
 const supabase = require('../../database'); // tu cliente Supabase
 const bcrypt=require('bcrypt')
-
+const {sendEmail}=require('../email/sendEmail')
+const {getWelcomeAdminTemplate}=require('../email/templates')
 const response = (res, status, code, message, data = null) => {
   return res.status(code).json({
     status,
@@ -661,10 +662,9 @@ const agregarAdmin = async (req, res) => {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(contrasena, saltRounds);
     
-    // 2. Definición del cargo administrativo
     const cargoFijo = 'soporte';
 
-    // 3. Inserción en la tabla 'usuario'
+    // 2. Inserción en la tabla 'usuario'
     const { data: usuarioData, error: usuarioError } = await supabase
       .from('usuario')
       .insert([
@@ -675,7 +675,7 @@ const agregarAdmin = async (req, res) => {
           rol: cargoFijo,
           fecha_nac: fechaNacimiento,
           teléfono: telefono,
-          estado: true, // Activación inmediata por ser personal administrativo
+          estado: true, // Activación inmediata
         },
       ])
       .select();
@@ -683,7 +683,7 @@ const agregarAdmin = async (req, res) => {
     if (usuarioError) throw usuarioError;
     const usuario_insertado = usuarioData[0];
 
-    // 4. Inserción en la tabla 'administrador'
+    // 3. Inserción en la tabla 'administrador'
     const { data: adminData, error: adminError } = await supabase
       .from("administrador")
       .insert([
@@ -698,19 +698,15 @@ const agregarAdmin = async (req, res) => {
 
     if (adminError) throw adminError;
 
-    // 5. Asignación de Rol en RBAC (Corrección con UPSERT)
-    // Buscamos primero el ID del rol 'soporte'
+    // 4. Asignación de Rol en RBAC
     const { data: rolData, error: rolError } = await supabase
       .from('roles')
       .select('id_rol')
       .ilike('nombre_rol', 'soporte')
       .single();
 
-    if (rolError) {
-      throw new Error('No se encontró el rol de soporte en el catálogo del sistema.');
-    }
+    if (rolError) throw new Error('No se encontró el rol de soporte en el catálogo del sistema.');
 
-    // Usamos upsert para evitar errores de duplicidad si un trigger ya creó la relación
     const { error: usuRolError } = await supabase
       .from('usuario_rol')
       .upsert(
@@ -720,16 +716,30 @@ const agregarAdmin = async (req, res) => {
             id_rol: rolData.id_rol
           }
         ], 
-        { 
-          onConflict: 'id_usuario,id_rol', 
-          ignoreDuplicates: true 
-        }
+        { onConflict: 'id_usuario,id_rol', ignoreDuplicates: true }
       );
 
     if (usuRolError) throw usuRolError;
 
-    // 6. Respuesta exitosa (201 Created)
-    return response(res, 'success', 201, 'Personal de soporte registrado y activado correctamente', {
+    // ------------------------------------------------------------
+    // 5. ENVÍO DE CORREO ELECTRÓNICO (Notificación de Credenciales)
+    // ------------------------------------------------------------
+    try {
+      const template = getWelcomeAdminTemplate({
+        nombreAdmin: nombre,
+        correo: correo,
+        contrasena: contrasena // Enviamos la contraseña plana original
+      });
+
+      await sendEmail(correo, template.subject, template.html);
+    } catch (mailError) {
+      // Logeamos el error del correo pero no detenemos la respuesta, 
+      // ya que el admin ya fue creado en la base de datos.
+      console.error("Error al enviar correo de bienvenida:", mailError.message);
+    }
+
+    // 6. Respuesta exitosa
+    return response(res, 'success', 201, 'Personal de soporte registrado y correo enviado correctamente', {
       usuario: usuario_insertado,
       detalle_admin: adminData[0]
     });

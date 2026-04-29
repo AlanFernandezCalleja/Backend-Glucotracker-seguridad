@@ -51,5 +51,23 @@ const getOtpTemplate = ({ nombreUsuario, codigo }) => ({
   `
 });
 
-module.exports = { getHipoTemplate, getHiperTemplate, getOtpTemplate };
+const getWelcomeAdminTemplate = ({ nombreAdmin, correo, contrasena }) => ({
+  subject: `Bienvenido al equipo de GlucoTracker - Tus credenciales`,
+  html: `
+    <div style="font-family: Arial, sans-serif; color: #333;">
+      <h2>¡Bienvenido/a, ${nombreAdmin}!</h2>
+      <p>Has sido registrado exitosamente como personal de <strong>Soporte</strong> en la plataforma GlucoTracker.</p>
+      <p>A continuación, te proporcionamos tus credenciales de acceso iniciales:</p>
+      <div style="background-color: #f4f4f4; padding: 15px; border-radius: 8px; border: 1px solid #ddd;">
+        <p><strong>Usuario:</strong> ${correo}</p>
+        <p><strong>Contraseña temporal:</strong> ${contrasena}</p>
+      </div>
+      <p style="margin-top: 20px;">Por seguridad, te recomendamos cambiar tu contraseña una vez que hayas ingresado al sistema.</p>
+     
+      <br>
+      <p>Atentamente,<br>Equipo de Administración de GlucoTracker</p>
+    </div>
+  `
+});
+module.exports = { getHipoTemplate, getHiperTemplate, getOtpTemplate, getOtpTemplate,getWelcomeAdminTemplate };
 
