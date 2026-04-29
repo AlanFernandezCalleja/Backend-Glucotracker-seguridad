@@ -95,129 +95,133 @@ const auditoriaEndpoint = require('./src/middlewares/auditoria.login');
 
 const cookieParser = require('cookie-parser');
 app.use(cookieParser());
+const response = (res, status, code, message, data = null) => {
+  return res.status(code).json({
+    status,
+    code,
+    message,
+    data
+  });
+};
 
 
 app.post('/api/prueba/login', loginPrueba)
-
 app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
   const { correo, contrasena } = req.body;
+  const MENSAJE_ERROR_AUTH = 'Correo o contraseña incorrectos';
 
-  // Buscar usuario
-  const { data: usuarioData, error: usuarioError } = await supabase
-    .from("usuario")
-    .select("id_usuario, correo, contrasena, rol")
-    .eq("correo", correo)
-    .eq("estado", true)
-    .single();
-
-  if (usuarioError || !usuarioData) {
-    console.log({
-      fecha: new Date().toISOString(),
-      endpoint: '/api/login',
-      metodo: 'POST',
-      correo,
-      ip: req.ip,
-      resultado: 'FALLIDO',
-      motivo: 'Correo no encontrado'
-    });
-    return res.status(401).json({ error: 'Correo no encontrado' });
+  // 1️⃣ Validación preventiva: Si envían datos vacíos, no dejamos que bcrypt o Supabase fallen
+  if (!correo || !contrasena) {
+    return response(res, 'error', 400, 'El correo y la contraseña son obligatorios');
   }
-
-  const usuario = usuarioData;
-  const rolMap = { 
-    administrador: 'id_admin', 
-    soporte:'id_admin',
-    paciente: 'id_paciente', 
-    medico: 'id_medico' 
-  };
-  if(usuarioData.rol=="soporte"){
-    usuarioData.rol="administrador";
-  }
-  const rolB = rolMap[usuario.rol];
-  const { data: rolData, error: rolError } = await supabase
-    .from(usuario.rol)
-    .select(rolB)
-    .eq("id_usuario", usuario.id_usuario);
-
-  if (rolError || !rolData) {
-    console.log({
-      fecha: new Date().toISOString(),
-      endpoint: '/api/login',
-      metodo: 'POST',
-      correo,
-      ip: req.ip,
-      resultado: 'FALLIDO',
-      motivo: 'Rol cuenta'
-    });
-    return res.status(401).json({ error: rolError.message })
-  };
-
-  const id_rol = rolData[rolB];
 
   try {
-    // Verificar contraseña
-    const isMatch = await bcrypt.compare(String(contrasena), usuario.contrasena);
-    if (!isMatch) return res.status(401).json({ error: 'Contraseña incorrecta' });
+    // 2️⃣ Buscar usuario (quitamos el filtro 'estado' de la consulta para poder dar un mensaje claro si está inactivo)
+    const { data: usuarioData, error: usuarioError } = await supabase
+      .from("usuario")
+      .select("id_usuario, correo, contrasena, rol, estado")
+      .eq("correo", correo)
+      .single();
 
-    // Generar OTPF
+    // Supabase devuelve error 'PGRST116' si no encuentra ninguna fila con ese correo
+    if (usuarioError && usuarioError.code === 'PGRST116' || !usuarioData) {
+      console.log(`[LOGIN OMITIDO] Correo inexistente: ${correo}`);
+      return response(res, 'error', 401, MENSAJE_ERROR_AUTH);
+    }
+    
+    // Si la base de datos lanza un error distinto (ej. se cayó la BD), lo lanzamos al catch
+    if (usuarioError) throw usuarioError;
+
+    // 3️⃣ Validar si la cuenta está inactiva
+    if (usuarioData.estado === false) {
+      console.log(`[LOGIN RECHAZADO] Cuenta inactiva: ${correo}`);
+      return response(res, 'error', 403, 'Tu cuenta está inactiva. Por favor contacta a soporte.');
+    }
+
+    // 4️⃣ Verificar contraseña de forma segura
+    const isMatch = await bcrypt.compare(String(contrasena), usuarioData.contrasena);
+    
+    if (!isMatch) {
+      console.log(`[LOGIN FALLIDO] Contraseña incorrecta para: ${correo}`);
+      return response(res, 'error', 401, MENSAJE_ERROR_AUTH); 
+    }
+
+    // --- HASTA AQUÍ LAS CREDENCIALES SON 100% CORRECTAS ---
+
+    // 5️⃣ Buscar Rol del Usuario
+    const rolMap = { 
+      administrador: 'id_admin', 
+      soporte: 'id_admin',
+      paciente: 'id_paciente', 
+      medico: 'id_medico' 
+    };
+    
+    let tablaRol = usuarioData.rol;
+    if (tablaRol === "soporte") {
+      tablaRol = "administrador"; // Los soportes se guardan en la tabla administrador
+    }
+    
+    const columnaIdRol = rolMap[usuarioData.rol];
+
+    const { data: rolData, error: rolError } = await supabase
+      .from(tablaRol)
+      .select(columnaIdRol)
+      .eq("id_usuario", usuarioData.id_usuario)
+      .single();
+
+    if (rolError || !rolData) {
+      throw new Error(`Inconsistencia en BD: No se encontró el registro en la tabla ${tablaRol} para el usuario ${usuarioData.id_usuario}`);
+    }
+
+    const id_rol = rolData[columnaIdRol];
+
+    // 6️⃣ Generar y enviar OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
-    setOTP(usuario.id_usuario, otp, 5 * 60 * 1000); // 5 minutos
+    setOTP(usuarioData.id_usuario, otp, 5 * 60 * 1000); // 5 minutos
 
-    // Enviar OTP por correo
     const { subject, html } = getOtpTemplate({
-      nombreUsuario: usuario.correo, // o nombre si lo tienes
+      nombreUsuario: usuarioData.correo, 
       codigo: otp
     });
 
-    await sendEmail(
-      usuario.correo,
-      subject,
-      html
-    );
-    console.log({
-      fecha: new Date().toISOString(),
-      endpoint: '/api/login',
-      metodo: 'POST',
-      correo,
-      id_usuario: usuario.id_usuario,
-      id_rol,
-      ip: req.ip,
-      resultado: 'EXITOSO',
-      mensaje: 'OTP enviado al correo'
+    await sendEmail(usuarioData.correo, subject, html);
+    
+    console.log(`[LOGIN EXITOSO] OTP enviado a: ${correo}`);
+
+    // 7️⃣ Respuesta exitosa estandarizada
+    return response(res, 'success', 200, 'Credenciales correctas. OTP enviado al correo.', { 
+      id_usuario: usuarioData.id_usuario, 
+      id_rol: id_rol 
     });
 
-    res.status(200).json({ id_usuario: usuario.id_usuario, id_rol: id_rol, message: 'OTP enviado al correo' });
   } catch (error) {
-    console.log({
-      fecha: new Date().toISOString(),
-      endpoint: '/api/login',
-      metodo: 'POST',
-      correo,
-      ip: req.ip,
-      resultado: 'FALLIDO',
-      motivo: error.message
-    });
-    res.status(500).json({ error: 'Error interno' });
+    // 8️⃣ El ERROR 500 SOLO OCURRE SI ALGO INTERNO FALLA (Base de datos caída, error de nodemailer, etc.)
+    console.error(`[ERROR CRÍTICO LOGIN] ${correo} - IP: ${req.ip} - Motivo:`, error.message);
+    
+    return response(
+      res, 
+      'error', 
+      500, 
+      'Ocurrió un error interno del servidor al procesar tu solicitud. Intenta nuevamente.'
+    );
   }
 });
-
-
 const { getOTP, deleteOTP } = require('./otpCache');
 const  {generateToken}  = require('./src/utils/auth');
 app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
   const { id_usuario, codigo } = req.body;
 
   try {
-    // 🔐 validar OTP
+    // 1️⃣ Validar OTP
     const cachedOTP = getOTP(id_usuario);
 
     if (!cachedOTP || cachedOTP !== codigo) {
-      return res.status(401).json({ error: 'Código incorrecto o expirado' });
+      return response(res, 'error', 401, 'Código incorrecto o expirado');
     }
 
     deleteOTP(id_usuario);
 
-    // 👤 obtener usuario
+    // 2️⃣ Obtener usuario
     const { data: usuario, error: usuarioError } = await supabase
       .from("usuario")
       .select("id_usuario, correo, rol")
@@ -225,13 +229,14 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
       .single();
 
     if (usuarioError || !usuario) {
-      return res.status(404).json({ error: "Usuario no encontrado" });
+      return response(res, 'error', 404, 'Usuario no encontrado en el sistema');
     }
 
-    if(usuario.rol=="soporte"){
-      usuario.rol="administrador";
+    if (usuario.rol == "soporte") {
+      usuario.rol = "administrador";
     }
-    // 🔧 configuración por rol
+
+    // 3️⃣ Configuración por rol
     const rolMap = {
       administrador: { tabla: "administrador", campos: ["id_admin", "cargo"] },
       medico: { tabla: "medico", campos: ["id_medico"] },
@@ -241,10 +246,10 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
     const config = rolMap[usuario.rol];
 
     if (!config) {
-      return res.status(400).json({ error: "Rol inválido" });
+      return response(res, 'error', 400, 'Rol de usuario inválido o no reconocido');
     }
 
-    // 🧩 obtener datos del rol
+    // 4️⃣ Obtener datos específicos del rol
     const { data: rolData, error: rolError } = await supabase
       .from(config.tabla)
       .select(config.campos.join(", "))
@@ -252,10 +257,10 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
       .single();
 
     if (rolError || !rolData) {
-      return res.status(404).json({ error: "Rol no encontrado" });
+      return response(res, 'error', 404, 'Información del perfil no encontrada');
     }
 
-    // 🎯 normalizar id_rol y cargo
+    // 5️⃣ Normalizar id_rol y cargo
     let id_rol;
     let cargo = null;
 
@@ -268,7 +273,7 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
       id_rol = rolData.id_paciente;
     }
 
-    // 🔐 permisos (solo admin por ahora)
+    // 6️⃣ Permisos (solo admin por ahora)
     let permisos = [];
 
     if (usuario.rol === "administrador") {
@@ -280,7 +285,7 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
       permisos = permisosData?.map(p => p.permiso.nombre) || [];
     }
 
-    // 🎟️ token
+    // 7️⃣ Generar JWT Token
     const token = generateToken({
       id_usuario: usuario.id_usuario,
       correo: usuario.correo,
@@ -289,17 +294,16 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
       permisos
     });
 
-    // 🍪 cookie
+    // 8️⃣ Establecer Cookie de seguridad
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      maxAge: 5 * 60 * 60 * 1000
+      maxAge: 5 * 60 * 60 * 1000 // 5 horas
     });
 
-    // 📤 respuesta final
-    res.json({
-      message: 'Login exitoso',
+    // 9️⃣ Respuesta final estandarizada
+    return response(res, 'success', 200, 'Autenticación exitosa', {
       usuario: {
         id_usuario: usuario.id_usuario,
         rol: usuario.rol,
@@ -310,8 +314,8 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
     });
 
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Error interno' });
+    console.error("Error en verify-otp:", error.message);
+    return response(res, 'error', 500, 'Error interno del servidor durante la verificación', error.message);
   }
 });
 app.put('/usuario/:id_usuario/password', async (req, res) => {
