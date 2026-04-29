@@ -106,104 +106,85 @@ const response = (res, status, code, message, data = null) => {
 
 
 app.post('/api/prueba/login', loginPrueba)
-app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
-  const { correo, contrasena } = req.body;
-  const MENSAJE_ERROR_AUTH = 'Correo o contraseña incorrectos';
+const { esContrasenaRobusta } = require('./src/utils/security');
+app.put('/usuario/:id_usuario/password', async (req, res) => {
+  const { id_usuario } = req.params;
+  const { contrasena } = req.body;
 
-  // 1️⃣ Validación preventiva: Si envían datos vacíos, no dejamos que bcrypt o Supabase fallen
-  if (!correo || !contrasena) {
-    return response(res, 'error', 400, 'El correo y la contraseña son obligatorios');
+  // 1️⃣ Validar robustez de la contraseña
+  const validacion = esContrasenaRobusta(contrasena);
+  if (!validacion.valida) {
+    return response(res, 'error', 400, validacion.mensaje);
   }
 
   try {
-    // 2️⃣ Buscar usuario (quitamos el filtro 'estado' de la consulta para poder dar un mensaje claro si está inactivo)
-    const { data: usuarioData, error: usuarioError } = await supabase
-      .from("usuario")
-      .select("id_usuario, correo, contrasena, rol, estado")
-      .eq("correo", correo)
+    // 2️⃣ Obtener datos del usuario actual
+    const { data: usuario, error: userError } = await supabase
+      .from('usuario')
+      .select('contrasena')
+      .eq('id_usuario', id_usuario)
       .single();
 
-    // Supabase devuelve error 'PGRST116' si no encuentra ninguna fila con ese correo
-    if (usuarioError && usuarioError.code === 'PGRST116' || !usuarioData) {
-      console.log(`[LOGIN OMITIDO] Correo inexistente: ${correo}`);
-      return response(res, 'error', 401, MENSAJE_ERROR_AUTH);
+    if (userError || !usuario) {
+      return response(res, 'error', 404, 'Usuario no encontrado en el sistema.');
+    }
+
+    // 3️⃣ Revisar historial de contraseñas
+    const { data: historial } = await supabase
+      .from('historial_contrasena')
+      .select('contrasena_hash')
+      .eq('usuario_id_usuario', id_usuario);
+
+    let hashUsado = false;
+    
+    // Comparar con el historial
+    if (historial && historial.length > 0) {
+      for (let rec of historial) {
+        if (await bcrypt.compare(String(contrasena), rec.contrasena_hash)) {
+          hashUsado = true; 
+          break;
+        }
+      }
     }
     
-    // Si la base de datos lanza un error distinto (ej. se cayó la BD), lo lanzamos al catch
-    if (usuarioError) throw usuarioError;
-
-    // 3️⃣ Validar si la cuenta está inactiva
-    if (usuarioData.estado === false) {
-      console.log(`[LOGIN RECHAZADO] Cuenta inactiva: ${correo}`);
-      return response(res, 'error', 403, 'Tu cuenta está inactiva. Por favor contacta a soporte.');
+    // Comparar con la contraseña actual
+    if (!hashUsado) {
+       hashUsado = await bcrypt.compare(String(contrasena), usuario.contrasena);
     }
 
-    // 4️⃣ Verificar contraseña de forma segura
-    const isMatch = await bcrypt.compare(String(contrasena), usuarioData.contrasena);
-    
-    if (!isMatch) {
-      console.log(`[LOGIN FALLIDO] Contraseña incorrecta para: ${correo}`);
-      return response(res, 'error', 401, MENSAJE_ERROR_AUTH); 
+    if (hashUsado) {
+      return response(res, 'error', 400, 'La contraseña no puede ser igual a una utilizada anteriormente.');
     }
 
-    // --- HASTA AQUÍ LAS CREDENCIALES SON 100% CORRECTAS ---
+    // 4️⃣ Hashear la nueva contraseña
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(contrasena, saltRounds);
 
-    // 5️⃣ Buscar Rol del Usuario
-    const rolMap = { 
-      administrador: 'id_admin', 
-      soporte: 'id_admin',
-      paciente: 'id_paciente', 
-      medico: 'id_medico' 
-    };
-    
-    let tablaRol = usuarioData.rol;
-    if (tablaRol === "soporte") {
-      tablaRol = "administrador"; // Los soportes se guardan en la tabla administrador
-    }
-    
-    const columnaIdRol = rolMap[usuarioData.rol];
-
-    const { data: rolData, error: rolError } = await supabase
-      .from(tablaRol)
-      .select(columnaIdRol)
-      .eq("id_usuario", usuarioData.id_usuario)
-      .single();
-
-    if (rolError || !rolData) {
-      throw new Error(`Inconsistencia en BD: No se encontró el registro en la tabla ${tablaRol} para el usuario ${usuarioData.id_usuario}`);
-    }
-
-    const id_rol = rolData[columnaIdRol];
-
-    // 6️⃣ Generar y enviar OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
-    setOTP(usuarioData.id_usuario, otp, 5 * 60 * 1000); // 5 minutos
-
-    const { subject, html } = getOtpTemplate({
-      nombreUsuario: usuarioData.correo, 
-      codigo: otp
+    // 5️⃣ Guardar en historial
+    await supabase.from('historial_contrasena').insert({
+      usuario_id_usuario: id_usuario,
+      contrasena_hash: hashedPassword
     });
 
-    await sendEmail(usuarioData.correo, subject, html);
-    
-    console.log(`[LOGIN EXITOSO] OTP enviado a: ${correo}`);
+    // 6️⃣ Actualizar usuario (desbloquear cuenta y reiniciar intentos)
+    const { data, error } = await supabase
+      .from('usuario')
+      .update({ 
+        contrasena: hashedPassword,
+        fecha_cambio_contrasena: new Date().toISOString(),
+        intentos_fallidos: 0,
+        bloqueado_hasta: null
+      })
+      .eq('id_usuario', id_usuario)
+      .select('id_usuario, nombre_completo, correo');
 
-    // 7️⃣ Respuesta exitosa estandarizada
-    return response(res, 'success', 200, 'Credenciales correctas. OTP enviado al correo.', { 
-      id_usuario: usuarioData.id_usuario, 
-      id_rol: id_rol 
-    });
+    if (error) throw error;
 
-  } catch (error) {
-    // 8️⃣ El ERROR 500 SOLO OCURRE SI ALGO INTERNO FALLA (Base de datos caída, error de nodemailer, etc.)
-    console.error(`[ERROR CRÍTICO LOGIN] ${correo} - IP: ${req.ip} - Motivo:`, error.message);
-    
-    return response(
-      res, 
-      'error', 
-      500, 
-      'Ocurrió un error interno del servidor al procesar tu solicitud. Intenta nuevamente.'
-    );
+    return response(res, 'success', 200, 'Contraseña actualizada correctamente.', data[0]);
+
+  } catch (err) {
+    console.error('Error al actualizar contraseña:', err.message);
+    return response(res, 'error', 500, 'Error interno del servidor al actualizar la contraseña.');
   }
 });
 const { getOTP, deleteOTP } = require('./otpCache');
@@ -318,32 +299,72 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
     return response(res, 'error', 500, 'Error interno del servidor durante la verificación', error.message);
   }
 });
+
+
 app.put('/usuario/:id_usuario/password', async (req, res) => {
   const { id_usuario } = req.params;
   const { contrasena } = req.body;
 
-  if (!contrasena || contrasena.length < 6) {
-    return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres.' });
+  const validacion = esContrasenaRobusta(contrasena);
+  if (!validacion.valida) {
+    return res.status(400).json({ error: validacion.mensaje });
   }
 
   try {
+    const { data: usuario, error: userError } = await supabase
+      .from('usuario')
+      .select('contrasena')
+      .eq('id_usuario', id_usuario)
+      .single();
+
+    if (userError || !usuario) {
+      return res.status(404).json({ error: 'Usuario no encontrado.' });
+    }
+
+    const { data: historial } = await supabase
+      .from('historial_contrasena')
+      .select('contrasena_hash')
+      .eq('usuario_id_usuario', id_usuario);
+
+    let hashUsado = false;
+    if (historial && historial.length > 0) {
+      for (let rec of historial) {
+        if (await bcrypt.compare(String(contrasena), rec.contrasena_hash)) {
+          hashUsado = true; break;
+        }
+      }
+    }
+    if (!hashUsado) {
+       hashUsado = await bcrypt.compare(String(contrasena), usuario.contrasena);
+    }
+
+    if (hashUsado) {
+      return res.status(400).json({ error: 'La contraseña no puede ser igual a una utilizada anteriormente.' });
+    }
+
     // Hashear la nueva contraseña
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(contrasena, saltRounds);
 
+    await supabase.from('historial_contrasena').insert({
+      usuario_id_usuario: id_usuario,
+      contrasena_hash: hashedPassword
+    });
+
     // Actualizar en Supabase
     const { data, error } = await supabase
       .from('usuario')
-      .update({ contrasena: hashedPassword })
+      .update({ 
+        contrasena: hashedPassword,
+        fecha_cambio_contrasena: new Date().toISOString(),
+        intentos_fallidos: 0,
+        bloqueado_hasta: null
+      })
       .eq('id_usuario', id_usuario)
       .select('id_usuario, nombre_completo, correo');
 
     if (error) {
       throw error;
-    }
-
-    if (!data || data.length === 0) {
-      return res.status(404).json({ error: 'Usuario no encontrado.' });
     }
 
     res.json({ message: 'Contraseña actualizada correctamente.', usuario: data[0] });
@@ -378,7 +399,9 @@ app.use('/api/general', generalRoutes);
 
 const pdfRoute = require('./src/routes/patientPDF.routes');
 const { loginAuth } = require('./src/controllers/auth.controller');
+const securityRoutes = require('./src/routes/security.routes');
 app.use("/api", pdfRoute);
+app.use("/api/seguridad", securityRoutes);
 
 
 app.listen(PORT, () => {
