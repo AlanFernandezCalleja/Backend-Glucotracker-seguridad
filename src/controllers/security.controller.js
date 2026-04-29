@@ -60,7 +60,7 @@ const verificarCodigoRecuperacion = async (req, res) => {
         res.status(200).json({ message: 'Código verificado exitosamente.', token });
     } catch (err) {
         console.error(err);
-        res.status(500).json({ error: 'Error interno.' });
+        res.status(500).json({ error: err.message });
     }
 };
 
