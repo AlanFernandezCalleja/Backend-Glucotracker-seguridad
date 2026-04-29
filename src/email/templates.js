@@ -77,7 +77,7 @@ const getDesbloqueoTemplate = ({ nombreUsuario, codigo }) => ({
   `
 });
 
-module.exports = { getHipoTemplate, getHiperTemplate, getOtpTemplate, getRecuperacionTemplate, getDesbloqueoTemplate };
+
 const getWelcomeAdminTemplate = ({ nombreAdmin, correo, contrasena }) => ({
   subject: `Bienvenido al equipo de GlucoTracker - Tus credenciales`,
   html: `
@@ -96,5 +96,5 @@ const getWelcomeAdminTemplate = ({ nombreAdmin, correo, contrasena }) => ({
     </div>
   `
 });
-module.exports = { getHipoTemplate, getHiperTemplate, getOtpTemplate, getOtpTemplate,getWelcomeAdminTemplate };
+module.exports = { getHipoTemplate, getHiperTemplate, getOtpTemplate, getRecuperacionTemplate, getDesbloqueoTemplate, getWelcomeAdminTemplate};
 

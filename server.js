@@ -106,7 +106,145 @@ const response = (res, status, code, message, data = null) => {
 
 
 app.post('/api/prueba/login', loginPrueba)
+app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
+  const { correo, contrasena } = req.body;
+  const MENSAJE_ERROR_AUTH = 'Correo o contraseña incorrectos';
+
+  // 1️⃣ Validación preventiva: Evita caídas si envían body vacío (Rama HEAD)
+  if (!correo || !contrasena) {
+    return response(res, 'error', 400, 'El correo y la contraseña son obligatorios');
+  }
+
+  try {
+    // 2️⃣ Buscar usuario incluyendo TODOS los campos necesarios de ambas ramas
+    const { data: usuarioData, error: usuarioError } = await supabase
+      .from("usuario")
+      .select("id_usuario, correo, contrasena, rol, estado, intentos_fallidos, bloqueado_hasta, fecha_cambio_contrasena")
+      .eq("correo", correo)
+      .single();
+
+    // Si Supabase no encuentra el correo, devuelve PGRST116
+    if ((usuarioError && usuarioError.code === 'PGRST116') || !usuarioData) {
+      console.log(`[LOGIN FALLIDO] Correo inexistente: ${correo}`);
+      return response(res, 'error', 401, MENSAJE_ERROR_AUTH);
+    }
+    
+    // Cualquier otro error de base de datos
+    if (usuarioError) throw usuarioError;
+
+    const usuario = usuarioData;
+
+    // 3️⃣ Verificar si la cuenta está inactiva (Rama HEAD)
+    if (usuario.estado === false) {
+      console.log(`[LOGIN RECHAZADO] Cuenta inactiva: ${correo}`);
+      return response(res, 'error', 403, 'Tu cuenta está inactiva. Por favor contacta a soporte.');
+    }
+
+    // 4️⃣ Verificar si la cuenta está bloqueada por intentos fallidos (Rama Seguridad)
+    if (usuario.bloqueado_hasta && new Date(usuario.bloqueado_hasta) > new Date()) {
+      console.log(`[LOGIN RECHAZADO] Cuenta bloqueada: ${correo}`);
+      return response(res, 'error', 403, 'Cuenta bloqueada por múltiples intentos fallidos. Solicita el desbloqueo por correo.');
+    }
+
+    // 5️⃣ Verificar contraseña de forma segura
+    const isMatch = await bcrypt.compare(String(contrasena), usuario.contrasena);
+    
+    if (!isMatch) {
+      // 🔸 Lógica de seguridad: Incrementar intentos fallidos
+      const nuevosIntentos = (usuario.intentos_fallidos || 0) + 1;
+      let updateData = { intentos_fallidos: nuevosIntentos };
+      
+      if (nuevosIntentos >= 3) {
+          // Bloquear cuenta (por 100 años para forzar desbloqueo por soporte/correo)
+          const fechaDesbloqueo = new Date();
+          fechaDesbloqueo.setFullYear(fechaDesbloqueo.getFullYear() + 100);
+          updateData.bloqueado_hasta = fechaDesbloqueo.toISOString();
+      }
+      
+      await supabase.from("usuario").update(updateData).eq("id_usuario", usuario.id_usuario);
+      
+      const mensaje = nuevosIntentos >= 3 
+        ? 'Cuenta bloqueada por múltiples intentos fallidos.' 
+        : MENSAJE_ERROR_AUTH;
+
+      console.log(`[LOGIN FALLIDO] Intento ${nuevosIntentos} fallido para: ${correo}`);
+      return response(res, 'error', 401, mensaje); 
+    }
+
+    // --- HASTA AQUÍ LAS CREDENCIALES SON 100% CORRECTAS ---
+
+    // 6️⃣ Reiniciar intentos fallidos tras éxito (Rama Seguridad)
+    if (usuario.intentos_fallidos > 0) {
+      await supabase.from("usuario").update({ intentos_fallidos: 0, bloqueado_hasta: null }).eq("id_usuario", usuario.id_usuario);
+    }
+
+    // 7️⃣ Verificar vigencia de contraseña - 6 meses (Rama Seguridad)
+    if (usuario.fecha_cambio_contrasena) {
+      const seisMesesAtras = new Date();
+      seisMesesAtras.setMonth(seisMesesAtras.getMonth() - 6);
+      if (new Date(usuario.fecha_cambio_contrasena) < seisMesesAtras) {
+        return res.status(403).json({ 
+          status: 'error',
+          code: 'PASSWORD_EXPIRED', 
+          message: 'Tu contraseña ha caducado (más de 6 meses). Por favor, actualízala.',
+          data: { id_usuario: usuario.id_usuario }
+        });
+      }
+    }
+
+    // 8️⃣ Buscar Rol del Usuario (Soporta rol 'soporte' de la Rama HEAD)
+    const rolMap = { 
+      administrador: 'id_admin', 
+      soporte: 'id_admin',
+      paciente: 'id_paciente', 
+      medico: 'id_medico' 
+    };
+    
+    let tablaRol = usuario.rol;
+    if (tablaRol === "soporte") {
+      tablaRol = "administrador"; // Los soportes se guardan en la tabla administrador
+    }
+    
+    const columnaIdRol = rolMap[usuario.rol];
+
+    const { data: rolData, error: rolError } = await supabase
+      .from(tablaRol)
+      .select(columnaIdRol)
+      .eq("id_usuario", usuario.id_usuario)
+      .single();
+
+    if (rolError || !rolData) {
+      throw new Error(`Inconsistencia en BD: No se encontró registro en ${tablaRol} para usuario ${usuario.id_usuario}`);
+    }
+
+    const id_rol = rolData[columnaIdRol];
+
+    // 9️⃣ Generar y enviar OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
+    setOTP(usuario.id_usuario, otp, 5 * 60 * 1000); // 5 minutos
+
+    const { subject, html } = getOtpTemplate({
+      nombreUsuario: usuario.correo, 
+      codigo: otp
+    });
+
+    await sendEmail(usuario.correo, subject, html);
+    console.log(`[LOGIN EXITOSO] OTP enviado a: ${correo}`);
+
+    // 🔟 Respuesta final estandarizada
+    return response(res, 'success', 200, 'Credenciales correctas. OTP enviado al correo.', { 
+      id_usuario: usuario.id_usuario, 
+      id_rol: id_rol 
+    });
+
+  } catch (error) {
+    console.error(`[ERROR CRÍTICO LOGIN] ${correo} - IP: ${req.ip} - Motivo:`, error.message);
+    return response(res, 'error', 500, 'Ocurrió un error interno del servidor al procesar tu solicitud. Intenta nuevamente.');
+  }
+});
+// Importación de la rama de seguridad (asegúrate de que la ruta sea correcta)
 const { esContrasenaRobusta } = require('./src/utils/security');
+
 app.put('/usuario/:id_usuario/password', async (req, res) => {
   const { id_usuario } = req.params;
   const { contrasena } = req.body;
