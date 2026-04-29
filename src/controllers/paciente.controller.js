@@ -1,6 +1,15 @@
 const supabase = require('../../database'); // tu cliente Supabase
 const bcrypt=require('bcrypt')
+const response = (res, status, code, message, data = null) => {
+  return res.status(code).json({
+    status,
+    code,
+    message,
+    data
+  });
+};
 
+/*
 const registrarPaciente = async (req, res) => {
   try {
     console.log("FILES LLEGAN:", req.files);
@@ -30,7 +39,7 @@ const registrarPaciente = async (req, res) => {
     const imgFiles = req.files?.foto_perfil;
 
     if (!imgFiles || imgFiles.length === 0) {
-      return res.status(400).json({ error: "Archivo de perfil faltante" });
+      return response(res)res.status(400).json({ error: "Archivo de perfil faltante" });
     }
 
     const img = imgFiles[0];
@@ -139,40 +148,193 @@ const registrarPaciente = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+*/
 
-const perfilPaciente=async (req, res) => {
-  const idPaciente = parseInt(req.params.idPaciente);
-
+const perfilPaciente = async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .rpc('obtener_paciente_por_id', { id_paciente_input: idPaciente });
+    const idPaciente = parseInt(req.params.idPaciente);
 
-    if (error) throw error;
+    // 1️⃣ Validación básica
+    if (isNaN(idPaciente)) {
+      return response(res, 'error', 400, 'El ID del paciente proporcionado no es válido');
+    }
 
-    res.json(data);
+    // 2️⃣ Consulta relacional con Supabase (Reemplazo del RPC)
+    const { data: p, error } = await supabase
+      .from('paciente')
+      .select(`
+        id_paciente,
+        genero,
+        altura,
+        peso,
+        embarazo,
+        nombre_emergencia,
+        numero_emergencia,
+        foto_perfil,
+        usuario!inner (
+          id_usuario,
+          nombre_completo,
+          fecha_nac,
+          teléfono,
+          correo,
+          fecha_registro
+        ),
+        nivel_actividad_fisica ( descripcion ),
+        administrador ( usuario ( nombre_completo ) ),
+        medico ( usuario ( nombre_completo ) ),
+        paciente_enfermedad ( enfermedades_base ( nombre_enfermedad ) ),
+        tratamiento_enfermedad ( dosis, tratamientos ( nombre_tratamiento, descripcion ) ),
+        seguimiento_embarazo ( semanas_embarazo, fecha_registro, fecha_terminacion )
+      `)
+      .eq('id_paciente', idPaciente)
+      .single(); // Esperamos un solo paciente
+
+    if (error) {
+      console.error('Error en consulta Supabase (perfilPaciente):', error.message);
+      if (error.code === 'PGRST116') {
+        return response(res, 'error', 404, 'No se encontró el paciente solicitado');
+      }
+      throw error;
+    }
+
+    // 3️⃣ Lógica para el seguimiento de embarazo (Replicando el CASE y ORDER BY del SQL)
+    let semanas_embarazo = null;
+    let registro_embarazo = null;
+
+    if (p.embarazo && p.seguimiento_embarazo && p.seguimiento_embarazo.length > 0) {
+      // Ordenamos en memoria: primero los activos (fecha_terminacion nula), luego por fecha más reciente
+      const embarazosOrdenados = [...p.seguimiento_embarazo].sort((a, b) => {
+        const aActivo = a.fecha_terminacion === null ? 0 : 1;
+        const bActivo = b.fecha_terminacion === null ? 0 : 1;
+        
+        if (aActivo !== bActivo) return aActivo - bActivo;
+        // Si ambos están activos o inactivos, ordenamos por fecha_registro descendente
+        return new Date(b.fecha_registro) - new Date(a.fecha_registro);
+      });
+
+      semanas_embarazo = embarazosOrdenados[0].semanas_embarazo;
+      registro_embarazo = embarazosOrdenados[0].fecha_registro;
+    }
+
+    // 4️⃣ Formateo de fecha de nacimiento (Replicando to_char 'DD/MM/YYYY')
+    let fechaNacFormateada = null;
+    if (p.usuario?.fecha_nac) {
+      const [year, month, day] = p.usuario.fecha_nac.split('-');
+      fechaNacFormateada = `${day}/${month}/${year}`;
+    }
+
+    // 5️⃣ Construcción del JSON final (Replicando la estructura exacta de json_build_object)
+    const pacienteFormateado = {
+      nombre: p.usuario?.nombre_completo,
+      id: String(p.usuario?.id_usuario), // Cast a texto como en tu SQL
+      fechaNac: fechaNacFormateada,
+      genero: p.genero,
+      altura: p.altura,
+      peso: p.peso,
+      telefono: p.usuario?.teléfono,
+      correo: p.usuario?.correo,
+      embarazo: p.embarazo,
+      semanas_embarazo: semanas_embarazo,
+      registro_embarazo: registro_embarazo,
+      nombre_emergencia: p.nombre_emergencia,
+      numero_emergencia: p.numero_emergencia,
+      foto_perfil: p.foto_perfil,
+      nombre_medico: p.medico?.usuario?.nombre_completo || null,
+      fecha_registro: p.usuario?.fecha_registro,
+      actividadFisica: {
+        nivel: p.nivel_actividad_fisica?.descripcion || null,
+        descripcion: p.nivel_actividad_fisica?.descripcion || null
+      },
+      afecciones: p.paciente_enfermedad?.map(pe => pe.enfermedades_base?.nombre_enfermedad) || [],
+      tratamientos: p.tratamiento_enfermedad?.map(te => ({
+        titulo: te.tratamientos?.nombre_tratamiento,
+        descripcion: te.tratamientos?.descripcion,
+        dosis: String(te.dosis)
+      })) || [],
+      admitidoPor: p.administrador?.usuario?.nombre_completo || null
+    };
+
+    // 6️⃣ Respuesta exitosa estandarizada
+    return response(res, 'success', 200, 'Perfil de paciente obtenido correctamente', pacienteFormateado);
+
   } catch (err) {
-    console.error('Error al obtener paciente:', err);
-    res.status(500).json({ error: 'Error al obtener paciente' });
+    console.error('Error interno en perfilPaciente:', err);
+    return response(res, 'error', 500, 'Error interno del servidor al procesar el perfil del paciente');
   }
 };
 
 
-const registrosPaciente= async (req, res) => {
+const registrosPaciente = async (req, res) => {
   try {
     const idPaciente = parseInt(req.params.idPaciente);
 
-    const { data, error } = await supabase.rpc('obtener_registros_por_paciente', {
-      id_paciente_input: idPaciente
-    });
+    // 1️⃣ Validación de entrada
+    if (isNaN(idPaciente)) {
+      return response(res, 'error', 400, 'El ID del paciente proporcionado no es válido');
+    }
+
+    // 2️⃣ Consulta Supabase replicando los LEFT JOINs
+    const { data: registrosBD, error } = await supabase
+      .from('registro_glucosa')
+      .select(`
+        id_registro,
+        fecha,
+        hora,
+        nivel_glucosa,
+        observaciones,
+        momento_dia ( momento ),
+        medico ( 
+          usuario ( nombre_completo ) 
+        ),
+        alertas (
+          id_alerta,
+          tipo_alerta ( tipo ),
+          retroalimentacion ( mensaje )
+        )
+      `)
+      .eq('id_paciente', idPaciente)
+      .order('fecha', { ascending: false }) // ORDER BY rg.fecha DESC
+      .order('hora', { ascending: false }); // ORDER BY rg.hora DESC
 
     if (error) {
-      console.error('Error ejecutando función:', error);
-      return res.status(500).json({ error: error.message });
+      console.error('Error en consulta Supabase (registrosPaciente):', error.message);
+      throw error;
     }
-    return res.status(200).json(data);
+
+    // 3️⃣ Si no hay registros, devolvemos arreglo vacío exitosamente
+    if (!registrosBD || registrosBD.length === 0) {
+      return response(res, 'success', 200, 'El paciente no tiene registros de glucosa', []);
+    }
+
+    // 4️⃣ Mapeo a la estructura plana exacta que devolvía tu SQL
+    const registrosFormateados = registrosBD.map(rg => {
+      // Supabase devuelve las relaciones 1 a N (como alertas) en un arreglo.
+      // Tomamos la primera alerta (si existe) y su respectiva retroalimentación.
+      const alerta = (rg.alertas && rg.alertas.length > 0) ? rg.alertas[0] : null;
+      const retroalimentacion = (alerta && alerta.retroalimentacion && alerta.retroalimentacion.length > 0) 
+                                ? alerta.retroalimentacion[0] 
+                                : null;
+
+      return {
+        id: rg.id_registro,
+        fecha: rg.fecha,
+        hora: rg.hora,
+        nivelGlucosa: Number(rg.nivel_glucosa),
+        momentoDia: rg.momento_dia?.momento || null,
+        quienTomoMuestra: rg.medico?.usuario?.nombre_completo || null,
+        observaciones: rg.observaciones || null,
+        idAlerta: alerta?.id_alerta || null,
+        tipo_alerta: alerta?.tipo_alerta?.tipo || null,
+        respuesta: retroalimentacion?.mensaje || null
+      };
+    });
+
+    // 5️⃣ Respuesta exitosa estandarizada
+    return response(res, 'success', 200, 'Historial de glucosa obtenido correctamente', registrosFormateados);
+
   } catch (err) {
-    console.error('Error interno:', err);
-    return res.status(500).json({ error: 'Error del servidor' });
+    console.error('Error interno en registrosPaciente:', err.message);
+    return response(res, 'error', 500, 'Error interno del servidor al procesar los registros de glucosa');
   }
 };
 
@@ -339,55 +501,76 @@ const actualizarPaciente = async (req, res) => {
 };
 
 const obtenerSemanasEmbarazoActual = async (req, res) => {
-  const id_paciente = req.params.id_paciente;
+  const id_paciente = parseInt(req.params.id_paciente);
+
+  // 1️⃣ Validación básica
+  if (isNaN(id_paciente)) {
+    return response(res, 'error', 400, 'El ID del paciente proporcionado no es válido');
+  }
 
   try {
-    // Obtener si el paciente está embarazado
+    // 2️⃣ Obtener si el paciente está embarazado
     const { data: dataPaciente, error: errorPaciente } = await supabase
       .from("paciente")
       .select("embarazo")
       .eq("id_paciente", id_paciente)
       .single();
 
-    if (errorPaciente) throw errorPaciente;
+    if (errorPaciente) {
+      // Supabase lanza 'PGRST116' cuando el .single() no encuentra nada
+      if (errorPaciente.code === 'PGRST116') {
+        return response(res, 'error', 404, 'Paciente no encontrado en el sistema');
+      }
+      throw errorPaciente;
+    }
 
     const embarazo = dataPaciente.embarazo;
 
-    if (embarazo === true) {
-      // Obtener el último registro activo de embarazo
-      const { data: dataEmbarazo, error: errorEmbarazo } = await supabase
-        .from("seguimiento_embarazo")
-        .select("fecha_registro, semanas_embarazo")
-        .eq("id_paciente", id_paciente)
-        .is("fecha_terminacion", null)
-        .order("fecha_registro", { ascending: false })
-        .limit(1);
-
-      if (errorEmbarazo) throw errorEmbarazo;
-
-      if (!dataEmbarazo || dataEmbarazo.length === 0) {
-        // No hay registros activos
-        return res.json({ semanas_actuales: null });
-      }
-
-      const registro = dataEmbarazo[0];
-      const fechaRegistro = new Date(registro.fecha_registro);
-      const semanasIniciales = registro.semanas_embarazo;
-
-      // Calcular semanas actuales sumando los días transcurridos desde la fecha del registro
-      const hoy = new Date();
-      const diferenciaDias = Math.floor((hoy - fechaRegistro) / (1000 * 60 * 60 * 24));
-      const semanasActuales = semanasIniciales + Math.floor(diferenciaDias / 7);
-
-      return res.json({ semanas_actuales: semanasActuales });
-    } else {
-      // Paciente no embarazado
-      return res.json({ semanas_actuales: null });
+    // 3️⃣ Si NO está embarazado
+    if (embarazo !== true) {
+      return response(res, 'success', 200, 'El paciente no se encuentra en estado de gestación', { 
+        semanas_actuales: null 
+      });
     }
+
+    // 4️⃣ Si SÍ está embarazado, obtener el último registro activo
+    const { data: dataEmbarazo, error: errorEmbarazo } = await supabase
+      .from("seguimiento_embarazo")
+      .select("fecha_registro, semanas_embarazo")
+      .eq("id_paciente", id_paciente)
+      .is("fecha_terminacion", null)
+      .order("fecha_registro", { ascending: false })
+      .limit(1);
+
+    if (errorEmbarazo) throw errorEmbarazo;
+
+    if (!dataEmbarazo || dataEmbarazo.length === 0) {
+      // Es un paciente con estado embarazo=true, pero sin registros activos (quizás faltó crearlo)
+      return response(res, 'success', 200, 'No hay un seguimiento de embarazo activo registrado', { 
+        semanas_actuales: null 
+      });
+    }
+
+    // 5️⃣ Cálculo de las semanas actuales
+    const registro = dataEmbarazo[0];
+    const fechaRegistro = new Date(registro.fecha_registro);
+    const semanasIniciales = registro.semanas_embarazo;
+
+    const hoy = new Date();
+    const diferenciaDias = Math.floor((hoy - fechaRegistro) / (1000 * 60 * 60 * 24));
+    const semanasActuales = semanasIniciales + Math.floor(diferenciaDias / 7);
+
+    // 6️⃣ Respuesta Exitosa
+    return response(res, 'success', 200, 'Semanas de embarazo calculadas correctamente', { 
+      semanas_actuales: semanasActuales 
+    });
+
   } catch (error) {
-    console.error("Error al obtener semanas de embarazo:", error);
-    return res.status(500).json({ error: "Error al obtener semanas de embarazo" });
+    console.error("Error al obtener semanas de embarazo:", error.message);
+    
+    // 7️⃣ Error del servidor
+    return response(res, 'error', 500, 'Error interno del servidor al obtener las semanas de embarazo', error.message);
   }
 };
 
-module.exports={perfilPaciente,registrosPaciente,registrarGlucosa,registrarPaciente,actualizarPaciente,obtenerSemanasEmbarazoActual};
+module.exports={perfilPaciente,registrosPaciente,registrarGlucosa,/*registrarPaciente,*/actualizarPaciente,obtenerSemanasEmbarazoActual};

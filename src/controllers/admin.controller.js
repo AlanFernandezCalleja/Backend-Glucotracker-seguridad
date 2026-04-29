@@ -1,9 +1,8 @@
 const supabase = require('../../database'); // tu cliente Supabase
 const bcrypt=require('bcrypt')
-
 const medicosActivos = async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { data: medicosBD, error } = await supabase
       .from('medico')
       .select(`
         id:id_medico,
@@ -26,12 +25,17 @@ const medicosActivos = async (req, res) => {
       .eq('usuario.estado', true);
 
     if (error) {
-      console.error('Error al obtener médicos:', error);
-      return res.status(400).json({ error: error.message });
+      console.error('Error en consulta Supabase (medicosActivos):', error.message);
+      throw error; // Lo mandamos al catch para un manejo unificado
     }
 
-    // Aplanamos el objeto para que coincida exactamente con el retorno de tu función SQL
-    const formateado = data.map(m => ({
+    // Si no hay médicos activos, devolvemos un arreglo vacío con éxito
+    if (!medicosBD || medicosBD.length === 0) {
+      return response(res, 'success', 200, 'No hay médicos activos en el sistema', []);
+    }
+
+    // Aplanamos el objeto para que coincida exactamente con tu interfaz del frontend
+    const formateado = medicosBD.map(m => ({
       id: m.id,
       nombre: m.usuario?.nombre_completo,
       fechaNac: m.usuario?.fecha_nac,
@@ -43,11 +47,12 @@ const medicosActivos = async (req, res) => {
       admitidoPor: m.administrador?.usuario?.nombre_completo
     }));
 
-    return res.status(200).json(formateado);
+    // Respuesta exitosa estandarizada
+    return response(res, 'success', 200, 'Lista de médicos activos obtenida correctamente', formateado);
 
   } catch (err) {
-    console.error('Error interno:', err);
-    return res.status(500).json({ error: 'Error del servidor' });
+    console.error('Error interno en medicosActivos:', err.message);
+    return response(res, 'error', 500, 'Error interno del servidor al procesar la lista de médicos', err.message);
   }
 };
 
@@ -170,12 +175,7 @@ const pacientesActivos = async (req, res) => {
           correo,
           fechaNac:fecha_nac,
           telefono:teléfono,
-          estado,
-          usuario_permiso (
-            permiso (
-              nombre
-            )
-          )
+          estado
         ),
         nivel_actividad_fisica (
           descripcion
@@ -219,7 +219,6 @@ const pacientesActivos = async (req, res) => {
     const formateado = data.map(p => {
       
      
-      const listaPermisos = p.usuario?.usuario_permiso?.map(up => up.permiso?.nombre) || [];
 
       return {
         id: p.id,
@@ -245,7 +244,6 @@ const pacientesActivos = async (req, res) => {
           dosis: String(te.dosis)
         })) || [],
         admitidoPor: p.administrador?.usuario?.nombre_completo,
-        permisos: listaPermisos 
       };
     });
 
@@ -397,27 +395,70 @@ const activarPaciente= async (req, res) => {
 };
 
 
-const perfilAdmin= async (req, res) => {
+const perfilAdmin = async (req, res) => {
   try {
     const idUsuario = parseInt(req.params.idUsuario);
 
-    const { data, error } = await supabase.rpc('obtener_admin_por_usuario', {
-      id_usuario_input: idUsuario
-    });
+    // 1️⃣ Validación básica
+    if (isNaN(idUsuario)) {
+      return response(res, 'error', 400, 'El ID de usuario proporcionado no es válido');
+    }
+
+    // 2️⃣ Consulta Relacional con Supabase (Reemplazo del RPC)
+    const { data: adminData, error } = await supabase
+      .from('administrador')
+      .select(`
+        id_admin,
+        cargo,
+        fecha_ingreso,
+        usuario!inner (
+          nombre_completo,
+          correo,
+          fecha_nac,
+          teléfono
+        ),
+        administrador ( 
+          usuario ( nombre_completo ) 
+        )
+      `)
+      .eq('id_usuario', idUsuario)
+      .single();
 
     if (error) {
-      console.error('Error ejecutando función:', error);
-      return res.status(500).json({ error: error.message });
+      console.error('Error en consulta Supabase (perfilAdmin):', error.message);
+      // Supabase lanza 'PGRST116' si el .single() no encuentra registros
+      if (error.code === 'PGRST116') {
+        return response(res, 'error', 404, 'No se encontró el perfil del administrador');
+      }
+      throw error;
     }
 
-    if (!data || data.length === 0) {
-      return res.status(404).json({ message: 'No se encontró el administrador' });
-    }
+    // 3️⃣ Formateo manual de fechas (Replicando to_char 'DD/MM/YYYY' de PostgreSQL)
+    const formatearFecha = (fechaOriginal) => {
+      if (!fechaOriginal) return null;
+      const [year, month, day] = fechaOriginal.split('-');
+      return `${day}/${month}/${year}`;
+    };
 
-    return res.status(200).json(data[0]); // devuelve el objeto directamente
+    // 4️⃣ Construcción del objeto JSON final (Misma estructura de la tabla temporal SQL)
+    const perfilFormateado = {
+      id: adminData.id_admin,
+      nombre: adminData.usuario?.nombre_completo,
+      correo: adminData.usuario?.correo,
+      fechaNac: formatearFecha(adminData.usuario?.fecha_nac),
+      telefono: adminData.usuario?.teléfono,
+      cargo: adminData.cargo,
+      fechaIn: formatearFecha(adminData.fecha_ingreso),
+      // COALESCE(ua.nombre_completo, 'No') replicado con el operador OR lógico
+      admitidoPor: adminData.administrador?.usuario?.nombre_completo || 'No'
+    };
+
+    // 5️⃣ Respuesta exitosa estandarizada
+    return response(res, 'success', 200, 'Perfil de administrador obtenido correctamente', perfilFormateado);
+
   } catch (err) {
-    console.error('Error interno:', err);
-    return res.status(500).json({ error: 'Error del servidor' });
+    console.error('Error interno en perfilAdmin:', err.message);
+    return response(res, 'error', 500, 'Error del servidor al intentar obtener el perfil del administrador');
   }
 };
 
