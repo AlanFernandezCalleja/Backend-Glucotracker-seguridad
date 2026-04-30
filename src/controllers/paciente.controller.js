@@ -134,6 +134,16 @@ const registrarPaciente = async (req, res) => {
         id_paciente: paciente.id_paciente,
         id_enfermedad: enfermedad_idInt
       });
+    
+    const { data: existing } = await supabase
+      .from('usuario')
+      .select('id_usuario')
+      .eq('correo', correo)
+      .single();
+
+    if (existing) {
+      return res.status(400).json({ error: 'El correo ya está registrado' });
+}
 
     if (errorEnfermedad) throw errorEnfermedad;
 

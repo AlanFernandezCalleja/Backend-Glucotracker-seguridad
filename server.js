@@ -16,8 +16,8 @@ const { getOtpTemplate } = require('./src/email/templates');
 const { setOTP } = require("./otpCache")
 const loginPrueba = require('./src/controllers/auth.controller')
 app.use(cors({
-  origin: ['http://localhost:4200', '*'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  origin: ['http://localhost:4200', 'https://frontend-glucotracker-seguridad.vercel.app','*'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH','OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
@@ -110,104 +110,239 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
   const { correo, contrasena } = req.body;
   const MENSAJE_ERROR_AUTH = 'Correo o contraseña incorrectos';
 
-  // 1️⃣ Validación preventiva: Si envían datos vacíos, no dejamos que bcrypt o Supabase fallen
+  // 1️⃣ Validación preventiva: Evita caídas si envían body vacío (Rama HEAD)
   if (!correo || !contrasena) {
     return response(res, 'error', 400, 'El correo y la contraseña son obligatorios');
   }
 
   try {
-    // 2️⃣ Buscar usuario (quitamos el filtro 'estado' de la consulta para poder dar un mensaje claro si está inactivo)
+    // 2️⃣ Buscar usuario incluyendo TODOS los campos necesarios de ambas ramas
     const { data: usuarioData, error: usuarioError } = await supabase
       .from("usuario")
-      .select("id_usuario, correo, contrasena, rol, estado")
+      .select("id_usuario, correo, contrasena, rol, estado, intentos_fallidos, bloqueado_hasta, fecha_cambio_contrasena")
       .eq("correo", correo)
       .single();
 
-    // Supabase devuelve error 'PGRST116' si no encuentra ninguna fila con ese correo
-    if (usuarioError && usuarioError.code === 'PGRST116' || !usuarioData) {
-      console.log(`[LOGIN OMITIDO] Correo inexistente: ${correo}`);
+    // Si Supabase no encuentra el correo, devuelve PGRST116
+    if ((usuarioError && usuarioError.code === 'PGRST116') || !usuarioData) {
+      console.log(`[LOGIN FALLIDO] Correo inexistente: ${correo}`);
       return response(res, 'error', 401, MENSAJE_ERROR_AUTH);
     }
-    
-    // Si la base de datos lanza un error distinto (ej. se cayó la BD), lo lanzamos al catch
+
+    // Cualquier otro error de base de datos
     if (usuarioError) throw usuarioError;
 
-    // 3️⃣ Validar si la cuenta está inactiva
-    if (usuarioData.estado === false) {
+    const usuario = usuarioData;
+
+    // 3️⃣ Verificar si la cuenta está inactiva o bloqueada (Rama HEAD + Seguridad)
+    if (usuario.estado === false) {
+      if (usuario.intentos_fallidos >= 3) {
+        console.log(`[LOGIN RECHAZADO] Cuenta bloqueada por intentos: ${correo}`);
+        return response(res, 'error', 403, 'Cuenta bloqueada por múltiples intentos fallidos.', { code: 'UNLOCK_REQUIRED', id_usuario: usuario.id_usuario });
+      }
       console.log(`[LOGIN RECHAZADO] Cuenta inactiva: ${correo}`);
       return response(res, 'error', 403, 'Tu cuenta está inactiva. Por favor contacta a soporte.');
     }
 
-    // 4️⃣ Verificar contraseña de forma segura
-    const isMatch = await bcrypt.compare(String(contrasena), usuarioData.contrasena);
-    
+    // 5️⃣ Verificar contraseña de forma segura
+    const isMatch = await bcrypt.compare(String(contrasena), usuario.contrasena);
+
     if (!isMatch) {
-      console.log(`[LOGIN FALLIDO] Contraseña incorrecta para: ${correo}`);
-      return response(res, 'error', 401, MENSAJE_ERROR_AUTH); 
+      // 🔸 Lógica de seguridad: Incrementar intentos fallidos
+      const nuevosIntentos = (usuario.intentos_fallidos || 0) + 1;
+      let updateData = { intentos_fallidos: nuevosIntentos };
+
+      if (nuevosIntentos >= 3) {
+        // Bloquear cuenta (suspender usuario)
+        updateData.estado = false;
+        // Opcional: mantener bloqueado_hasta si se quiere, pero estado: false ya bloquea
+        const fechaDesbloqueo = new Date();
+        fechaDesbloqueo.setFullYear(fechaDesbloqueo.getFullYear() + 100);
+        updateData.bloqueado_hasta = fechaDesbloqueo.toISOString();
+      }
+
+      await supabase.from("usuario").update(updateData).eq("id_usuario", usuario.id_usuario);
+
+      const mensaje = nuevosIntentos >= 3
+        ? 'Cuenta bloqueada por múltiples intentos fallidos.'
+        : MENSAJE_ERROR_AUTH;
+
+      console.log(`[LOGIN FALLIDO] Intento ${nuevosIntentos} fallido para: ${correo}`);
+      
+      if (nuevosIntentos === 3) {
+        return response(res, 'error', 401, mensaje, { code: 'ACCOUNT_BLOCKED_NOW' });
+      }
+      return response(res, 'error', 401, mensaje);
     }
 
     // --- HASTA AQUÍ LAS CREDENCIALES SON 100% CORRECTAS ---
 
-    // 5️⃣ Buscar Rol del Usuario
-    const rolMap = { 
-      administrador: 'id_admin', 
+    // 6️⃣ Reiniciar intentos fallidos tras éxito (Rama Seguridad)
+    if (usuario.intentos_fallidos > 0) {
+      await supabase.from("usuario").update({ intentos_fallidos: 0, bloqueado_hasta: null }).eq("id_usuario", usuario.id_usuario);
+    }
+
+    // Verificar vigencia (3 meses) usando historial_contrasena
+    const { data: historialData } = await supabase
+      .from('historial_contrasena')
+      .select('created_at')
+      .eq('usuario_id_usuario', usuario.id_usuario)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    let fechaCambio = usuario.fecha_cambio_contrasena;
+    if (historialData && historialData.created_at) {
+      fechaCambio = historialData.created_at;
+    }
+
+    if (fechaCambio) {
+      const tresMesesAtras = new Date();
+      tresMesesAtras.setMonth(tresMesesAtras.getMonth() - 3);
+      if (new Date(fechaCambio) < tresMesesAtras) {
+        return res.status(403).json({
+          error: 'Tu contraseña ha caducado (más de 3 meses). Por favor, actualízala.',
+          code: 'PASSWORD_EXPIRED',
+          data: { id_usuario: usuario.id_usuario }
+        });
+      }
+    }
+
+    // 8️⃣ Buscar Rol del Usuario (Soporta rol 'soporte' de la Rama HEAD)
+    const rolMap = {
+      administrador: 'id_admin',
       soporte: 'id_admin',
-      paciente: 'id_paciente', 
-      medico: 'id_medico' 
+      paciente: 'id_paciente',
+      medico: 'id_medico'
     };
-    
-    let tablaRol = usuarioData.rol;
+
+    let tablaRol = usuario.rol;
     if (tablaRol === "soporte") {
       tablaRol = "administrador"; // Los soportes se guardan en la tabla administrador
     }
-    
-    const columnaIdRol = rolMap[usuarioData.rol];
+
+    const columnaIdRol = rolMap[usuario.rol];
 
     const { data: rolData, error: rolError } = await supabase
       .from(tablaRol)
       .select(columnaIdRol)
-      .eq("id_usuario", usuarioData.id_usuario)
+      .eq("id_usuario", usuario.id_usuario)
       .single();
 
     if (rolError || !rolData) {
-      throw new Error(`Inconsistencia en BD: No se encontró el registro en la tabla ${tablaRol} para el usuario ${usuarioData.id_usuario}`);
+      throw new Error(`Inconsistencia en BD: No se encontró registro en ${tablaRol} para usuario ${usuario.id_usuario}`);
     }
 
     const id_rol = rolData[columnaIdRol];
 
-    // 6️⃣ Generar y enviar OTP
+    // 9️⃣ Generar y enviar OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
-    setOTP(usuarioData.id_usuario, otp, 5 * 60 * 1000); // 5 minutos
+    setOTP(usuario.id_usuario, otp, 5 * 60 * 1000); // 5 minutos
 
     const { subject, html } = getOtpTemplate({
-      nombreUsuario: usuarioData.correo, 
+      nombreUsuario: usuario.correo,
       codigo: otp
     });
 
-    await sendEmail(usuarioData.correo, subject, html);
-    
+    await sendEmail(usuario.correo, subject, html);
     console.log(`[LOGIN EXITOSO] OTP enviado a: ${correo}`);
 
-    // 7️⃣ Respuesta exitosa estandarizada
-    return response(res, 'success', 200, 'Credenciales correctas. OTP enviado al correo.', { 
-      id_usuario: usuarioData.id_usuario, 
-      id_rol: id_rol 
+    // 🔟 Respuesta final estandarizada
+    return response(res, 'success', 200, 'Credenciales correctas. OTP enviado al correo.', {
+      id_usuario: usuario.id_usuario,
+      id_rol: id_rol
     });
 
   } catch (error) {
-    // 8️⃣ El ERROR 500 SOLO OCURRE SI ALGO INTERNO FALLA (Base de datos caída, error de nodemailer, etc.)
     console.error(`[ERROR CRÍTICO LOGIN] ${correo} - IP: ${req.ip} - Motivo:`, error.message);
-    
-    return response(
-      res, 
-      'error', 
-      500, 
-      'Ocurrió un error interno del servidor al procesar tu solicitud. Intenta nuevamente.'
-    );
+    return response(res, 'error', 500, 'Ocurrió un error interno del servidor al procesar tu solicitud. Intenta nuevamente.');
+  }
+});
+// Importación de la rama de seguridad (asegúrate de que la ruta sea correcta)
+const { esContrasenaRobusta } = require('./src/utils/security');
+
+app.put('/api/usuario/:id_usuario/password', async (req, res) => {
+  const { id_usuario } = req.params;
+  const { contrasena } = req.body;
+
+  // 1️⃣ Validar robustez de la contraseña
+  const validacion = esContrasenaRobusta(contrasena);
+  if (!validacion.valida) {
+    return response(res, 'error', 400, validacion.mensaje);
+  }
+
+  try {
+    // 2️⃣ Obtener datos del usuario actual
+    const { data: usuario, error: userError } = await supabase
+      .from('usuario')
+      .select('contrasena')
+      .eq('id_usuario', id_usuario)
+      .single();
+
+    if (userError || !usuario) {
+      return response(res, 'error', 404, 'Usuario no encontrado en el sistema.');
+    }
+
+    // 3️⃣ Revisar historial de contraseñas
+    const { data: historial } = await supabase
+      .from('historial_contrasena')
+      .select('contrasena_hash')
+      .eq('usuario_id_usuario', id_usuario);
+
+    let hashUsado = false;
+
+    // Comparar con el historial
+    if (historial && historial.length > 0) {
+      for (let rec of historial) {
+        if (await bcrypt.compare(String(contrasena), rec.contrasena_hash)) {
+          hashUsado = true;
+          break;
+        }
+      }
+    }
+
+    // Comparar con la contraseña actual
+    if (!hashUsado) {
+      hashUsado = await bcrypt.compare(String(contrasena), usuario.contrasena);
+    }
+
+    if (hashUsado) {
+      return response(res, 'error', 400, 'La contraseña no puede ser igual a una utilizada anteriormente.');
+    }
+
+    // 4️⃣ Hashear la nueva contraseña
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(contrasena, saltRounds);
+
+    // 5️⃣ Guardar en historial
+    await supabase.from('historial_contrasena').insert({
+      usuario_id_usuario: id_usuario,
+      contrasena_hash: hashedPassword
+    });
+
+    // 6️⃣ Actualizar usuario (desbloquear cuenta y reiniciar intentos)
+    const { data, error } = await supabase
+      .from('usuario')
+      .update({
+        contrasena: hashedPassword,
+        fecha_cambio_contrasena: new Date().toISOString(),
+        intentos_fallidos: 0,
+        bloqueado_hasta: null
+      })
+      .eq('id_usuario', id_usuario)
+      .select('id_usuario, nombre_completo, correo');
+
+    if (error) throw error;
+
+    return response(res, 'success', 200, 'Contraseña actualizada correctamente.', data[0]);
+
+  } catch (err) {
+    console.error('Error al actualizar contraseña:', err.message);
+    return response(res, 'error', 500, 'Error interno del servidor al actualizar la contraseña.');
   }
 });
 const { getOTP, deleteOTP } = require('./otpCache');
-const  {generateToken}  = require('./src/utils/auth');
+const { generateToken } = require('./src/utils/auth');
 app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
   const { id_usuario, codigo } = req.body;
 
@@ -297,8 +432,8 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
     // 8️⃣ Establecer Cookie de seguridad
     res.cookie('token', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure: true,
+      sameSite: 'none',
       maxAge: 5 * 60 * 60 * 1000 // 5 horas
     });
 
@@ -318,32 +453,72 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
     return response(res, 'error', 500, 'Error interno del servidor durante la verificación', error.message);
   }
 });
+
+
 app.put('/usuario/:id_usuario/password', async (req, res) => {
   const { id_usuario } = req.params;
   const { contrasena } = req.body;
 
-  if (!contrasena || contrasena.length < 6) {
-    return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres.' });
+  const validacion = esContrasenaRobusta(contrasena);
+  if (!validacion.valida) {
+    return res.status(400).json({ error: validacion.mensaje });
   }
 
   try {
+    const { data: usuario, error: userError } = await supabase
+      .from('usuario')
+      .select('contrasena')
+      .eq('id_usuario', id_usuario)
+      .single();
+
+    if (userError || !usuario) {
+      return res.status(404).json({ error: 'Usuario no encontrado.' });
+    }
+
+    const { data: historial } = await supabase
+      .from('historial_contrasena')
+      .select('contrasena_hash')
+      .eq('usuario_id_usuario', id_usuario);
+
+    let hashUsado = false;
+    if (historial && historial.length > 0) {
+      for (let rec of historial) {
+        if (await bcrypt.compare(String(contrasena), rec.contrasena_hash)) {
+          hashUsado = true; break;
+        }
+      }
+    }
+    if (!hashUsado) {
+      hashUsado = await bcrypt.compare(String(contrasena), usuario.contrasena);
+    }
+
+    if (hashUsado) {
+      return res.status(400).json({ error: 'La contraseña no puede ser igual a una utilizada anteriormente.' });
+    }
+
     // Hashear la nueva contraseña
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(contrasena, saltRounds);
 
+    await supabase.from('historial_contrasena').insert({
+      usuario_id_usuario: id_usuario,
+      contrasena_hash: hashedPassword
+    });
+
     // Actualizar en Supabase
     const { data, error } = await supabase
       .from('usuario')
-      .update({ contrasena: hashedPassword })
+      .update({
+        contrasena: hashedPassword,
+        fecha_cambio_contrasena: new Date().toISOString(),
+        intentos_fallidos: 0,
+        bloqueado_hasta: null
+      })
       .eq('id_usuario', id_usuario)
       .select('id_usuario, nombre_completo, correo');
 
     if (error) {
       throw error;
-    }
-
-    if (!data || data.length === 0) {
-      return res.status(404).json({ error: 'Usuario no encontrado.' });
     }
 
     res.json({ message: 'Contraseña actualizada correctamente.', usuario: data[0] });
@@ -358,8 +533,8 @@ app.put('/usuario/:id_usuario/password', async (req, res) => {
 
 
 
-const solicitudRoutes=require('./src/routes/solicitud.routes');
-app.use('/api/solicitudes',solicitudRoutes);
+const solicitudRoutes = require('./src/routes/solicitud.routes');
+app.use('/api/solicitudes', solicitudRoutes);
 
 const medicoRoutes = require('./src/routes/medico.routes');
 app.use('/api/medicos', medicoRoutes);
@@ -378,7 +553,9 @@ app.use('/api/general', generalRoutes);
 
 const pdfRoute = require('./src/routes/patientPDF.routes');
 const { loginAuth } = require('./src/controllers/auth.controller');
+const securityRoutes = require('./src/routes/security.routes');
 app.use("/api", pdfRoute);
+app.use("/api/seguridad", securityRoutes);
 
 
 app.listen(PORT, () => {

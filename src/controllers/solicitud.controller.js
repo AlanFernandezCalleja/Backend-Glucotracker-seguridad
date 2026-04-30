@@ -1,12 +1,17 @@
 const bcrypt = require('bcrypt');
 const supabase = require('../../database'); // Ajusta la ruta a tu conexión
 
+
+const response = (res, status, code, message, data = null) => {
+  return res.status(code).json({ status, code, message, data });
+};
+
 const solicitarRegistro = async (req, res) => {
   const { nombre, correo, contrasena, fechaNac, telefono } = req.body;
 
   // 1. Validación básica de campos vacíos
   if (!nombre || !correo || !contrasena || !fechaNac || !telefono) {
-    return res.status(400).json({ error: 'Todos los campos son obligatorios' });
+    return response(res, 'error', 400, 'Todos los campos son obligatorios para enviar la solicitud');
   }
 
   try {
@@ -34,23 +39,21 @@ const solicitarRegistro = async (req, res) => {
     if (error) {
       // 4. Manejo de error si el correo ya está registrado (Violación de restricción UNIQUE)
       if (error.code === '23505') {
-        return res.status(409).json({ error: 'El correo electrónico ya se encuentra registrado' });
+        return response(res, 'error', 409, 'El correo electrónico ingresado ya se encuentra registrado en el sistema');
       }
       throw error;
     }
 
-    // 5. Respuesta exitosa
-    res.status(201).json({ 
-      message: 'Solicitud registrada correctamente. Pendiente de validación por Soporte.',
-      usuario_id: data[0].id_usuario // Retornamos el ID por si lo necesitas a futuro
+    // 5. Respuesta exitosa (201 Created)
+    return response(res, 'success', 201, 'Solicitud registrada correctamente. Pendiente de validación por Soporte.', { 
+      usuario_id: data[0].id_usuario 
     });
 
   } catch (error) {
     console.error('Error en solicitarRegistro:', error.message);
-    res.status(500).json({ error: 'Error interno del servidor al procesar la solicitud' });
+    return response(res, 'error', 500, 'Error interno del servidor al procesar la solicitud de registro', error.message);
   }
 };
-
 module.exports = {
   // ... exporta tus otras funciones,
   solicitarRegistro

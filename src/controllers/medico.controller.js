@@ -8,7 +8,7 @@ const response = (res, status, code, message, data = null) => {
     data
   });
 };
-
+/*
 const registrarMedico = async (req, res) => {
   try {
     const { nombre_completo, correo, contrasena, telefono, fecha_nac, id_especialidad, departamento } = req.body;
@@ -87,7 +87,7 @@ const registrarMedico = async (req, res) => {
 
 module.exports = { registrarMedico };
 
-
+*/
 
 
 const verMedicos = async (req, res) => {
@@ -654,7 +654,6 @@ const actualizarMedico = async (req, res) => {
 module.exports = {
   verMedicos,
   perfilMedico,
-  registrarMedico,
   verPacientes,
   alertasActivas,
   alertasResueltas,
