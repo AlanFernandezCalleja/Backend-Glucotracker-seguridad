@@ -16,8 +16,8 @@ const { getOtpTemplate } = require('./src/email/templates');
 const { setOTP } = require("./otpCache")
 const loginPrueba = require('./src/controllers/auth.controller')
 app.use(cors({
-  origin: ['http://localhost:4200', '*'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  origin: ['http://localhost:4200', 'https://frontend-glucotracker-seguridad.vercel.app','*'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH','OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
@@ -432,8 +432,8 @@ app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
     // 8️⃣ Establecer Cookie de seguridad
     res.cookie('token', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure: true,
+      sameSite: 'none',
       maxAge: 5 * 60 * 60 * 1000 // 5 horas
     });
 
