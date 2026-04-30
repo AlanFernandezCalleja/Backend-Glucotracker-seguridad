@@ -158,12 +158,16 @@ const solicitarDesbloqueo = async (req, res) => {
     try {
         const { data: usuario, error } = await supabase
             .from("usuario")
-            .select("id_usuario, correo")
+            .select("id_usuario, correo, intentos_fallidos")
             .eq("correo", correo)
             .single();
 
         if (error || !usuario) {
             return res.status(404).json({ error: 'Usuario no encontrado' });
+        }
+
+        if (usuario.intentos_fallidos < 3) {
+            return res.status(403).json({ error: 'Tu cuenta ha sido suspendida por un administrador. Contacta a soporte para más información.' });
         }
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -199,7 +203,7 @@ const confirmarDesbloqueo = async (req, res) => {
 
         await supabase.from('usuario').update({
             intentos_fallidos: 0,
-            bloqueado_hasta: null
+            estado: true
         }).eq('id_usuario', usuario.id_usuario);
 
         res.status(200).json({ message: 'Cuenta desbloqueada exitosamente.' });

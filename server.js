@@ -17,7 +17,7 @@ const { setOTP } = require("./otpCache")
 const loginPrueba = require('./src/controllers/auth.controller')
 app.use(cors({
   origin: ['http://localhost:4200', '*'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE','PATCH'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
@@ -128,47 +128,51 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
       console.log(`[LOGIN FALLIDO] Correo inexistente: ${correo}`);
       return response(res, 'error', 401, MENSAJE_ERROR_AUTH);
     }
-    
+
     // Cualquier otro error de base de datos
     if (usuarioError) throw usuarioError;
 
     const usuario = usuarioData;
 
-    // 3️⃣ Verificar si la cuenta está inactiva (Rama HEAD)
+    // 3️⃣ Verificar si la cuenta está inactiva o bloqueada (Rama HEAD + Seguridad)
     if (usuario.estado === false) {
+      if (usuario.intentos_fallidos >= 3) {
+        console.log(`[LOGIN RECHAZADO] Cuenta bloqueada por intentos: ${correo}`);
+        return response(res, 'error', 403, 'Cuenta bloqueada por múltiples intentos fallidos.', { code: 'UNLOCK_REQUIRED', id_usuario: usuario.id_usuario });
+      }
       console.log(`[LOGIN RECHAZADO] Cuenta inactiva: ${correo}`);
       return response(res, 'error', 403, 'Tu cuenta está inactiva. Por favor contacta a soporte.');
     }
 
-    // 4️⃣ Verificar si la cuenta está bloqueada por intentos fallidos (Rama Seguridad)
-    if (usuario.bloqueado_hasta && new Date(usuario.bloqueado_hasta) > new Date()) {
-      console.log(`[LOGIN RECHAZADO] Cuenta bloqueada: ${correo}`);
-      return response(res, 'error', 403, 'Cuenta bloqueada por múltiples intentos fallidos. Solicita el desbloqueo por correo.');
-    }
-
     // 5️⃣ Verificar contraseña de forma segura
     const isMatch = await bcrypt.compare(String(contrasena), usuario.contrasena);
-    
+
     if (!isMatch) {
       // 🔸 Lógica de seguridad: Incrementar intentos fallidos
       const nuevosIntentos = (usuario.intentos_fallidos || 0) + 1;
       let updateData = { intentos_fallidos: nuevosIntentos };
-      
+
       if (nuevosIntentos >= 3) {
-          // Bloquear cuenta (por 100 años para forzar desbloqueo por soporte/correo)
-          const fechaDesbloqueo = new Date();
-          fechaDesbloqueo.setFullYear(fechaDesbloqueo.getFullYear() + 100);
-          updateData.bloqueado_hasta = fechaDesbloqueo.toISOString();
+        // Bloquear cuenta (suspender usuario)
+        updateData.estado = false;
+        // Opcional: mantener bloqueado_hasta si se quiere, pero estado: false ya bloquea
+        const fechaDesbloqueo = new Date();
+        fechaDesbloqueo.setFullYear(fechaDesbloqueo.getFullYear() + 100);
+        updateData.bloqueado_hasta = fechaDesbloqueo.toISOString();
       }
-      
+
       await supabase.from("usuario").update(updateData).eq("id_usuario", usuario.id_usuario);
-      
-      const mensaje = nuevosIntentos >= 3 
-        ? 'Cuenta bloqueada por múltiples intentos fallidos.' 
+
+      const mensaje = nuevosIntentos >= 3
+        ? 'Cuenta bloqueada por múltiples intentos fallidos.'
         : MENSAJE_ERROR_AUTH;
 
       console.log(`[LOGIN FALLIDO] Intento ${nuevosIntentos} fallido para: ${correo}`);
-      return response(res, 'error', 401, mensaje); 
+      
+      if (nuevosIntentos === 3) {
+        return response(res, 'error', 401, mensaje, { code: 'ACCOUNT_BLOCKED_NOW' });
+      }
+      return response(res, 'error', 401, mensaje);
     }
 
     // --- HASTA AQUÍ LAS CREDENCIALES SON 100% CORRECTAS ---
@@ -178,33 +182,45 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
       await supabase.from("usuario").update({ intentos_fallidos: 0, bloqueado_hasta: null }).eq("id_usuario", usuario.id_usuario);
     }
 
-    // 7️⃣ Verificar vigencia de contraseña - 6 meses (Rama Seguridad)
-    if (usuario.fecha_cambio_contrasena) {
-      const seisMesesAtras = new Date();
-      seisMesesAtras.setMonth(seisMesesAtras.getMonth() - 6);
-      if (new Date(usuario.fecha_cambio_contrasena) < seisMesesAtras) {
-        return res.status(403).json({ 
-          status: 'error',
-          code: 'PASSWORD_EXPIRED', 
-          message: 'Tu contraseña ha caducado (más de 6 meses). Por favor, actualízala.',
+    // Verificar vigencia (3 meses) usando historial_contrasena
+    const { data: historialData } = await supabase
+      .from('historial_contrasena')
+      .select('created_at')
+      .eq('usuario_id_usuario', usuario.id_usuario)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    let fechaCambio = usuario.fecha_cambio_contrasena;
+    if (historialData && historialData.created_at) {
+      fechaCambio = historialData.created_at;
+    }
+
+    if (fechaCambio) {
+      const tresMesesAtras = new Date();
+      tresMesesAtras.setMonth(tresMesesAtras.getMonth() - 3);
+      if (new Date(fechaCambio) < tresMesesAtras) {
+        return res.status(403).json({
+          error: 'Tu contraseña ha caducado (más de 3 meses). Por favor, actualízala.',
+          code: 'PASSWORD_EXPIRED',
           data: { id_usuario: usuario.id_usuario }
         });
       }
     }
 
     // 8️⃣ Buscar Rol del Usuario (Soporta rol 'soporte' de la Rama HEAD)
-    const rolMap = { 
-      administrador: 'id_admin', 
+    const rolMap = {
+      administrador: 'id_admin',
       soporte: 'id_admin',
-      paciente: 'id_paciente', 
-      medico: 'id_medico' 
+      paciente: 'id_paciente',
+      medico: 'id_medico'
     };
-    
+
     let tablaRol = usuario.rol;
     if (tablaRol === "soporte") {
       tablaRol = "administrador"; // Los soportes se guardan en la tabla administrador
     }
-    
+
     const columnaIdRol = rolMap[usuario.rol];
 
     const { data: rolData, error: rolError } = await supabase
@@ -224,7 +240,7 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
     setOTP(usuario.id_usuario, otp, 5 * 60 * 1000); // 5 minutos
 
     const { subject, html } = getOtpTemplate({
-      nombreUsuario: usuario.correo, 
+      nombreUsuario: usuario.correo,
       codigo: otp
     });
 
@@ -232,9 +248,9 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
     console.log(`[LOGIN EXITOSO] OTP enviado a: ${correo}`);
 
     // 🔟 Respuesta final estandarizada
-    return response(res, 'success', 200, 'Credenciales correctas. OTP enviado al correo.', { 
-      id_usuario: usuario.id_usuario, 
-      id_rol: id_rol 
+    return response(res, 'success', 200, 'Credenciales correctas. OTP enviado al correo.', {
+      id_usuario: usuario.id_usuario,
+      id_rol: id_rol
     });
 
   } catch (error) {
@@ -274,20 +290,20 @@ app.put('/usuario/:id_usuario/password', async (req, res) => {
       .eq('usuario_id_usuario', id_usuario);
 
     let hashUsado = false;
-    
+
     // Comparar con el historial
     if (historial && historial.length > 0) {
       for (let rec of historial) {
         if (await bcrypt.compare(String(contrasena), rec.contrasena_hash)) {
-          hashUsado = true; 
+          hashUsado = true;
           break;
         }
       }
     }
-    
+
     // Comparar con la contraseña actual
     if (!hashUsado) {
-       hashUsado = await bcrypt.compare(String(contrasena), usuario.contrasena);
+      hashUsado = await bcrypt.compare(String(contrasena), usuario.contrasena);
     }
 
     if (hashUsado) {
@@ -307,7 +323,7 @@ app.put('/usuario/:id_usuario/password', async (req, res) => {
     // 6️⃣ Actualizar usuario (desbloquear cuenta y reiniciar intentos)
     const { data, error } = await supabase
       .from('usuario')
-      .update({ 
+      .update({
         contrasena: hashedPassword,
         fecha_cambio_contrasena: new Date().toISOString(),
         intentos_fallidos: 0,
@@ -326,7 +342,7 @@ app.put('/usuario/:id_usuario/password', async (req, res) => {
   }
 });
 const { getOTP, deleteOTP } = require('./otpCache');
-const  {generateToken}  = require('./src/utils/auth');
+const { generateToken } = require('./src/utils/auth');
 app.post('/api/verify-otp', auditoriaEndpoint(), async (req, res) => {
   const { id_usuario, codigo } = req.body;
 
@@ -473,7 +489,7 @@ app.put('/usuario/:id_usuario/password', async (req, res) => {
       }
     }
     if (!hashUsado) {
-       hashUsado = await bcrypt.compare(String(contrasena), usuario.contrasena);
+      hashUsado = await bcrypt.compare(String(contrasena), usuario.contrasena);
     }
 
     if (hashUsado) {
@@ -492,7 +508,7 @@ app.put('/usuario/:id_usuario/password', async (req, res) => {
     // Actualizar en Supabase
     const { data, error } = await supabase
       .from('usuario')
-      .update({ 
+      .update({
         contrasena: hashedPassword,
         fecha_cambio_contrasena: new Date().toISOString(),
         intentos_fallidos: 0,
@@ -517,8 +533,8 @@ app.put('/usuario/:id_usuario/password', async (req, res) => {
 
 
 
-const solicitudRoutes=require('./src/routes/solicitud.routes');
-app.use('/api/solicitudes',solicitudRoutes);
+const solicitudRoutes = require('./src/routes/solicitud.routes');
+app.use('/api/solicitudes', solicitudRoutes);
 
 const medicoRoutes = require('./src/routes/medico.routes');
 app.use('/api/medicos', medicoRoutes);
