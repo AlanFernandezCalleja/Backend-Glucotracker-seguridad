@@ -261,7 +261,7 @@ app.post('/api/login', auditoriaEndpoint(), async (req, res) => {
 // Importación de la rama de seguridad (asegúrate de que la ruta sea correcta)
 const { esContrasenaRobusta } = require('./src/utils/security');
 
-app.put('/usuario/:id_usuario/password', async (req, res) => {
+app.put('/api/usuario/:id_usuario/password', async (req, res) => {
   const { id_usuario } = req.params;
   const { contrasena } = req.body;
 
